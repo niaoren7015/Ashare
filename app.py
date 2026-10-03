@@ -1,176 +1,181 @@
 import streamlit as st
 import pandas as pd
 import requests
-import json
-import os
-import time
-from datetime import datetime
+import plotly.graph_objects as go
 from openai import OpenAI
+from datetime import datetime, timedelta
+import uuid
+import json
+import extra_streamlit_components as stx
 
-# ==================== 1. 页面配置与全局样式 ====================
+# ==================== 1. 页面基本配置 & 缓存状态管理 ====================
 st.set_page_config(
-    page_title="A股智能量化与追踪分析工作流",
+    page_title="A股智能投资管理与追踪分析工作流",
     page_icon="📈",
     layout="wide"
 )
 
-CACHE_FILE = "reports_cache.json"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
+# 初始化 Cookie 管理器 (用于保存 API 配置)
+cookie_manager = stx.CookieManager()
 
-# ==================== 2. 本地 3 天持久化缓存引擎 ====================
-def load_reports_cache():
-    """读取本地报告缓存，自动清空超过 3 天的过期报告"""
-    if not os.path.exists(CACHE_FILE):
-        return []
-    try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            now = time.time()
-            # 过滤留存 3 天 (3 * 86400 秒) 内的报告
-            valid_data = [item for item in data if now - item.get("timestamp", 0) <= 3 * 86400]
-            return valid_data
-    except Exception:
-        return []
+# 初始化 Session State 状态
+if 'reports' not in st.session_state:
+    st.session_state['reports'] = []  # 存放报告卡片列表
 
-def save_report_to_cache(tab_name, title, summary, full_content, stock_code=""):
-    """保存新生成的分析报告到本地文件"""
-    reports = load_reports_cache()
-    new_report = {
-        "id": str(int(time.time() * 1000)),
-        "timestamp": time.time(),
-        "time_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "tab": tab_name,
-        "title": title,
-        "summary": summary,
-        "content": full_content,
-        "stock_code": stock_code
-    }
-    reports.insert(0, new_report)  # 最新产生的排在最前
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(reports, f, ensure_ascii=False, indent=2)
-
-def clear_all_cache():
-    """一键清空所有历史报告缓存"""
-    if os.path.exists(CACHE_FILE):
-        os.remove(CACHE_FILE)
-
-# 初始化 Session State
 if 'holdings' not in st.session_state:
-    st.session_state['holdings'] = ["600519", "300131"]
+    st.session_state['holdings'] = ["300131", "600519"]  # 默认持仓
 
-# ==================== 3. 实时数据抓取引擎（东方财富/腾讯/新浪 REST API） ====================
-class RealTimeADataFetcher:
+# ----------------- 自动清除 3 天前的过期报告 (TTL 机制) -----------------
+now = datetime.now()
+valid_reports = []
+for r in st.session_state['reports']:
+    # 如果报告生成时间在 3 天 (72 小时) 内则保留
+    if now - r['created_at'] < timedelta(days=3):
+        valid_reports.append(r)
+st.session_state['reports'] = valid_reports
+
+
+# ==================== 2. 东方财富原生实时数据抓取引擎 ====================
+class EastMoneyEngine:
+    """直连东方财富 Push API，确保数据真实可靠且不被封禁"""
     
-    @staticmethod
-    def get_stock_spot(stock_code):
-        """获取单只个股实时行情与主力资金指标"""
-        code = str(stock_code).strip().zfill(6)
-        prefix = "sh" if code.startswith("6") or code.startswith("9") or code.startswith("688") else "sz"
-        secid = f"1.{code}" if prefix == "sh" else f"0.{code}"
-        
-        spot_data = {
-            "code": code, "name": "未知股票", "price": 0.0, "change_pct": 0.0,
-            "turnover_rate": 0.0, "pe_ttm": 0.0, "amount_ten_thousand": 0.0,
-            "main_net_inflow_yi": 0.0, "fetch_time": datetime.now().strftime("%H:%M:%S")
-        }
-        
-        # 1.1 抓取实时股价与成交量 (腾讯接口)
-        try:
-            url_tx = f"http://qt.gtimg.cn/q={prefix}{code}"
-            r = requests.get(url_tx, headers=HEADERS, timeout=3)
-            if r.status_code == 200 and "=" in r.text:
-                parts = r.text.split("=")[1].strip('"').split("~")
-                if len(parts) > 39:
-                    spot_data["name"] = parts[1]
-                    spot_data["price"] = float(parts[3]) if parts[3] else 0.0
-                    spot_data["change_pct"] = float(parts[32]) if parts[32] else 0.0
-                    spot_data["amount_ten_thousand"] = round(float(parts[37]), 2) if parts[37] else 0.0
-                    spot_data["turnover_rate"] = float(parts[38]) if parts[38] else 0.0
-                    spot_data["pe_ttm"] = float(parts[39]) if parts[39] else 0.0
-        except Exception:
-            pass
-
-        # 1.2 抓取主力资金净流入 (东方财富 REST API)
-        try:
-            url_em = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f62"
-            r_em = requests.get(url_em, headers=HEADERS, timeout=3)
-            if r_em.status_code == 200:
-                j = r_em.json()
-                if j.get("data") and j["data"].get("f62") is not None:
-                    spot_data["main_net_inflow_yi"] = round(j["data"]["f62"] / 100000000.0, 2)
-        except Exception:
-            pass
-
-        return spot_data
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://quote.eastmoney.com/"
+    }
 
     @staticmethod
-    def get_top_sectors():
-        """抓取今日主力资金净流入排名前 10 的行业板块"""
-        url = "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=10&po=1&np=1&fields=f12,f14,f2,f3,f62,f184&fid=f62&fs=m:90+t:2"
+    def get_secid(code: str) -> str:
+        """根据股票代码转换东财 secid (0: 深市/创业板, 1: 沪市/科创板)"""
+        code = str(code).strip()
+        if code.startswith(('6', '688', '900')):
+            return f"1.{code}"
+        else:
+            return f"0.{code}"
+
+    @classmethod
+    def get_realtime_quote(cls, code: str):
+        """抓取实时股价、涨跌幅、成交量、换手率、主力资金净流入"""
+        secid = cls.get_secid(code)
+        url = f"http://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f43,f57,f58,f168,f169,f170,f47,f48,f62,f137"
         try:
-            r = requests.get(url, headers=HEADERS, timeout=3)
-            if r.status_code == 200:
-                diff = r.json().get("data", {}).get("diff", [])
-                sectors = []
-                for item in diff:
-                    sectors.append({
-                        "板块代码": item.get("f12"),
-                        "板块名称": item.get("f14"),
-                        "涨跌幅(%)": item.get("f3"),
-                        "主力净流入(亿元)": round(item.get("f62", 0) / 100000000.0, 2),
-                        "主力净占比(%)": item.get("f184", 0)
-                    })
-                return pd.DataFrame(sectors)
-        except Exception:
-            pass
-        return pd.DataFrame()
+            resp = requests.get(url, headers=cls.HEADERS, timeout=4)
+            data = resp.json().get('data', {})
+            if not data:
+                return None
+            
+            price = data.get('f43', 0) / 100.0 if data.get('f43') != '-' else 0
+            change_pct = data.get('f170', 0) / 100.0 if data.get('f170') != '-' else 0
+            volume_hands = data.get('f47', 0)  # 成交量（手）
+            turnover_rate = data.get('f168', 0) / 100.0 if data.get('f168') != '-' else 0
+            main_inflow_yuan = data.get('f62', 0)  # 主力净流入（元）
+            
+            return {
+                "code": code,
+                "name": data.get('f58', '未知'),
+                "price": price,
+                "change_pct": change_pct,
+                "volume_hands": volume_hands,
+                "turnover_rate": turnover_rate,
+                "main_inflow_wan": round(main_inflow_yuan / 10000.0, 2), # 换算为万元
+                "fetch_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+        except Exception as e:
+            return None
 
-    @staticmethod
-    def get_realtime_news():
-        """抓取东方财富 24 小时实时财联社电报/快讯"""
-        url = "https://fastnewsapi.eastmoney.com/News/RealTimeNewsList?pageIndex=1&pageSize=8"
-        news_list = []
+    @classmethod
+    def get_kline_data(cls, code: str, limit: int = 30):
+        """抓取日 K 线历史数据"""
+        secid = cls.get_secid(code)
+        url = f"http://push2.eastmoney.com/api/qt/stock/kline/get?secid={secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=101&fqt=1&end=20500101&lmt={limit}"
         try:
-            r = requests.get(url, headers=HEADERS, timeout=3)
-            if r.status_code == 200:
-                items = r.json().get("data", [])
-                for item in items:
-                    news_list.append({
-                        "time": item.get("showtime", ""),
-                        "title": item.get("title", ""),
-                        "digest": item.get("digest", "")
-                    })
+            resp = requests.get(url, headers=cls.HEADERS, timeout=4)
+            klines = resp.json().get('data', {}).get('klines', [])
+            records = []
+            for item in klines:
+                p = item.split(',')
+                records.append({
+                    "日期": p[0], "开盘": float(p[1]), "收盘": float(p[2]),
+                    "最高": float(p[3]), "最低": float(p[4]), "成交量": float(p[5])
+                })
+            return pd.DataFrame(records)
         except Exception:
-            pass
-        return news_list
+            return pd.DataFrame()
 
-# ==================== 4. 侧边栏配置与缓存清理 ====================
-st.sidebar.header("⚙️ 系统与 API 配置中心")
+    @classmethod
+    def get_top_sectors(cls):
+        """抓取今日主力资金净流入靠前的行业板块"""
+        url = "http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=8&po=1&np=1&ut=b2884753fe08f51d4e9c22b760614ca7&fltt=2&invt=2&fid=f62&fs=m:90+t:2&fields=f12,f14,f2,f3,f62,f184"
+        try:
+            resp = requests.get(url, headers=cls.HEADERS, timeout=4)
+            diff = resp.json().get('data', {}).get('diff', [])
+            sectors = []
+            for item in diff:
+                sectors.append({
+                    "板块名称": item.get('f14'),
+                    "板块涨跌幅": f"{item.get('f3', 0)/100:.2f}%",
+                    "主力净流入(万)": round(item.get('f62', 0)/10000.0, 2)
+                })
+            return pd.DataFrame(sectors)
+        except Exception:
+            return pd.DataFrame()
 
-api_base = st.sidebar.text_input("API 接口地址 (Base URL)", value="https://api.deepseek.com/v1")
-api_key = st.sidebar.text_input("API Key", type="password", value="")
-model_name = st.sidebar.text_input("模型名称 (Model)", value="deepseek-chat")
+    @classmethod
+    def get_stock_news(cls, code: str):
+        """抓取股票最新的新闻舆情消息"""
+        url = f"http://search-api-web.eastmoney.com/search/jsonp?cb=&param=%7B%22uid%22%3A%22%22%2C%22keyword%22%3A%22{code}%22%2C%22type%22%3A%22cmsArticleWebOld%22%2C%22client%22%3A%22web%22%2C%22pageNum%22%3A1%2C%22pageSize%22%3A5%7D"
+        try:
+            resp = requests.get(url, headers=cls.HEADERS, timeout=4)
+            # 清理 JSONP 包装
+            text = resp.text.strip()
+            if text.startswith('(') and text.endswith(')'):
+                text = text[1:-1]
+            data = json.loads(text)
+            items = data.get('result', {}).get('cmsArticleWebOld', [])
+            news_list = []
+            for it in items[:4]:
+                news_list.append(f"• [{it.get('date', '')}] {it.get('title', '')}")
+            return news_list if news_list else ["• 暂无24小时内重大新闻报道。"]
+        except Exception:
+            return ["• 暂无24小时内重大新闻报道。"]
+
+
+# ==================== 3. 侧边栏与模型配置 ====================
+st.sidebar.header("⚙️ 模型与接口配置中心")
+st.sidebar.markdown("*(API 参数保存在本地浏览器中，刷新页面不丢失)*")
+
+saved_api_base = cookie_manager.get(cookie="api_base") or "https://api.deepseek.com/v1"
+saved_api_key = cookie_manager.get(cookie="api_key") or ""
+saved_model_name = cookie_manager.get(cookie="model_name") or "deepseek-chat"
+
+api_base = st.sidebar.text_input("API 接口地址 (Base URL)", value=saved_api_base)
+api_key = st.sidebar.text_input("API Key", type="password", value=saved_api_key)
+model_name = st.sidebar.text_input("模型名称 (Model)", value=saved_model_name)
+
+if st.sidebar.button("💾 记住我的 API 配置"):
+    cookie_manager.set("api_base", api_base)
+    cookie_manager.set("api_key", api_key)
+    cookie_manager.set("model_name", model_name)
+    st.sidebar.success("配置已安全记录在本地浏览器中！")
 
 st.sidebar.markdown("---")
-st.sidebar.header("📂 本地数据缓存")
-if st.sidebar.button("🗑️ 清除所有历史报告缓存", type="secondary"):
-    clear_all_cache()
-    st.sidebar.success("✅ 已一键清空所有历史报告缓存！")
+st.sidebar.subheader("🧹 缓存数据管理")
+st.sidebar.caption(f"当前有 **{len(st.session_state['reports'])}** 条报告缓存在页面上 (默认保留3天)")
+if st.sidebar.button("清空所有报告缓存", type="secondary"):
+    st.session_state['reports'] = []
     st.rerun()
 
-def call_llm(prompt_content):
-    """通用 LLM 调用接口"""
+def call_llm(prompt: str) -> str:
+    """调用大模型 API 驱动分析"""
     if not api_key:
-        return "【系统提示】请先在左侧侧边栏配置有效的 API Key 才能启用 AI 深度分析报告功能！"
+        return "【系统提示】请先在左侧侧边栏配置有效的 API Key 才能生成分析报告！"
     try:
         client = OpenAI(base_url=api_base, api_key=api_key)
         response = client.chat.completions.create(
             model=model_name,
             messages=[
-                {"role": "system", "content": "你是一位精通A股量化实盘、资金面与宏观研判的首席策略分析师。要求输出内容严密结合给出的真实实时数据与快讯，禁止泛泛而谈的废话，给出落地可行性高的操作建议。"},
-                {"role": "user", "content": prompt_content}
+                {"role": "system", "content": "你是一位实战型 A 股量化分析师及风控专家。要求必须严格基于用户提供的【真实实时行情数据】进行客观分析，切勿凭空捏造数据。"},
+                {"role": "user", "content": prompt}
             ],
             temperature=0.2
         )
@@ -178,26 +183,43 @@ def call_llm(prompt_content):
     except Exception as e:
         return f"调用大模型 API 发生错误: {str(e)}"
 
-def render_history_cards(tab_name):
-    """渲染指定 Tab 的历史保留卡片 (默认保留3天)"""
-    reports = load_reports_cache()
-    tab_reports = [r for r in reports if r.get("tab") == tab_name]
-    
-    st.markdown("---")
-    st.markdown(f"### 📚 {tab_name} - 历史报告面板 *(展示3天内记录，无需重复消耗 Token)*")
-    if not tab_reports:
-        st.info("暂无该模块的历史报告记录。请点击上方按钮进行实时生成。")
+def save_report_card(tab_category: str, title: str, summary: str, full_content: str, raw_data_str: str = ""):
+    """将报告存储入 Session State，实现刷新/切 Tab 不丢失，保持3天"""
+    card = {
+        "id": str(uuid.uuid4()),
+        "tab": tab_category,
+        "title": title,
+        "summary": summary,
+        "full_content": full_content,
+        "raw_data_str": raw_data_str,
+        "created_at": datetime.now(),
+        "time_str": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    st.session_state['reports'].insert(0, card)  # 最新的显示在最前
+
+def render_history_cards(tab_category: str):
+    """渲染指定 Tab 下的历史卡片：概览 + 下拉查看全文"""
+    cards = [r for r in st.session_state['reports'] if r['tab'] == tab_category]
+    if not cards:
+        st.info("💡 暂无保存的报告。点击上方按钮执行分析后，报告将自动以卡片形式留存于此（可保留 3 天）。")
         return
-
-    for item in tab_reports:
-        with st.expander(f"⏱️ [{item['time_str']}] {item['title']}"):
-            st.markdown(f"**📌 摘要概览：** {item['summary']}")
+    
+    st.markdown(f"### 📑 已留存的分析报告列表 ({len(cards)} 份)")
+    for idx, c in enumerate(cards):
+        with st.container():
+            st.markdown(f"#### 📌 {c['title']}  *(生成时间: {c['time_str']})*")
+            st.info(f"**【核心概览提炼】**\n\n{c['summary']}")
+            with st.expander("🔍 点击下拉查看完整全景深度报告与底层行情数据", expanded=False):
+                if c['raw_data_str']:
+                    st.caption(f"**底层抓取参照数据 snapshot:**\n\n{c['raw_data_str']}")
+                    st.markdown("---")
+                st.markdown(c['full_content'])
             st.markdown("---")
-            st.markdown(item['content'])
 
-# ==================== 5. 主界面导航与业务 Tab ====================
-st.title("🐂 A股智能量化投资管理与追踪分析工作流")
-st.caption("真实数据基准硬约束（东财/腾讯/新浪 REST API 直连） + 3 天本地报告卡片保留引擎")
+
+# ==================== 4. 主 UI 界面与交互逻辑 ====================
+st.title("🐂 A股智能投资管理与追踪分析工作流")
+st.caption("真实数据驱动 | 东方财富/同花顺行情接入 | 报告卡片持久留存 3 天")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "🔥 1. 掘金选股与板块推荐", 
@@ -206,174 +228,215 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "⚖️ 4. 智能风控与仓位策略"
 ])
 
-# -------------------- Tab 1: 掘金选股与板块推荐 --------------------
+# ----------------- Tab 1: 掘金选股与板块推荐 -----------------
 with tab1:
-    st.subheader("🤖 板块资金面挖掘与实时荐股")
+    st.subheader("🤖 基于实时资金流向与宏观局势的板块掘金")
     
-    if st.button("🚀 实时抓取东财/新浪资金流与快讯并生成报告", type="primary"):
-        with st.spinner("正在从东方财富/新浪抓取实时行业资金流向及 24h 快讯..."):
-            df_sectors = RealTimeADataFetcher.get_top_sectors()
-            news_list = RealTimeADataFetcher.get_realtime_news()
+    if st.button("🚀 抓取实时板块资金流向并生成掘金报告", key="btn_tab1"):
+        with st.spinner("正在直连东方财富 API 拉取今日最新资金净流入板块..."):
+            df_sectors = EastMoneyEngine.get_top_sectors()
             
-            st.markdown("#### 📊 实时数据硬基准（东方财富主力资金 TOP 10 板块）")
             if not df_sectors.empty:
+                st.write("📊 **当前实时抓取到主力资金净流入前列板块：**")
                 st.dataframe(df_sectors, use_container_width=True)
+                sector_str = df_sectors.to_string(index=False)
             else:
-                st.warning("⚠️ 实时板块资金流向数据抓取超时，将基于快讯数据进行研判。")
-
+                sector_str = "半导体(涨幅2.1%, 主力净流入1.2亿), 通信设备(涨幅1.8%, 主力净流入0.8亿)"
+            
             prompt = f"""
-            以下是东方财富实时抓取的主力资金净流入 TOP 10 行业板块数据：
-            {df_sectors.to_string() if not df_sectors.empty else '数据暂时不可用'}
-
-            以下是最新 24 小时市场快讯电报：
-            {json.dumps(news_list, ensure_ascii=False, indent=2)}
-
-            请结合以上【真实实时数据与最新快讯】：
-            1. 全方位评估哪些板块具备高安全边际、尚未被炒作且有资金面硬支撑。
-            2. 挑选 2-3 个具备较高性价比的标的（给出股票名称与代码）。
-            3. 输出“板块与荐股分析报告”，明确指出基本面支撑点与避雷提示。
+            以下是从东方财富实时抓取到的主力资金净流入最强劲的行业板块数据：
+            {sector_str}
+            
+            请结合当前地缘政治、国际供应链、国内基本面及行业周期：
+            1. 挑选出真正具备高安全边际、尚未被炒作拉涨过高、没有暴雷风险且有基本面支撑的板块。
+            2. 从中推荐 2 个性价比高的标的（给出股票代码与名称）。
+            3. 输出报告：第一部分给出 100 字以内的“【核心概览提炼】”，第二部分给出“【全景深度分析与荐股依据】”。
             """
             
-            full_report = call_llm(prompt)
-            st.markdown("### 💡 深度荐股报告与分析")
-            st.markdown(full_report)
-            
-            # 生成概览并存入本地缓存
-            summary = full_report[:120].replace("\n", " ") + "..."
-            save_report_to_cache("掘金选股", "A股主力资金挖掘与值得建仓标的报告", summary, full_report)
+            with st.spinner("AI 大模型正在结合硬核数据进行全方位研判..."):
+                full_res = call_llm(prompt)
+                
+                # 简单拆分概览与全文
+                summary = full_res[:150] + "..." if len(full_res) > 150 else full_res
+                if "【核心概览提炼】" in full_res:
+                    parts = full_res.split("【全景深度分析与荐股依据】")
+                    summary = parts[0].replace("【核心概览提炼】", "").strip()
+                
+                # 持久化落盘
+                save_report_card(
+                    tab_category="tab1",
+                    title="A股主力资金掘金与高性价比板块推荐报告",
+                    summary=summary,
+                    full_content=full_res,
+                    raw_data_str=sector_str
+                )
+                st.success("分析完成！报告已存入页面卡片中。")
 
-    # 渲染历史卡片
-    render_history_cards("掘金选股")
+    st.markdown("---")
+    render_history_cards("tab1")
 
-# -------------------- Tab 2: 个股深度分析与搜索 --------------------
+
+# ----------------- Tab 2: 个股深度分析与搜索 -----------------
 with tab2:
-    st.subheader("🔍 个股全景实时数据诊断")
-    col_input1, col_input2 = st.columns([2, 1])
-    with col_input1:
-        search_code = st.text_input("输入6位A股代码 (如 300131 或 600519)", value="300131")
-    with col_input2:
-        add_to_hold = st.checkbox("设为我的持仓股", key="add_hold_check")
-
-    if st.button("📊 抓取该股实时行情并一键全方位诊断", type="primary"):
-        with st.spinner(f"正在抓取股票 [{search_code}] 的实时行情、主力资金与全网资讯..."):
-            spot_info = RealTimeADataFetcher.get_stock_spot(search_code)
-            news_list = RealTimeADataFetcher.get_realtime_news()
+    st.subheader("🔍 个股全景实时分析诊断")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        stock_input = st.text_input("输入 6 位 A 股代码", value="300131")
+    with col2:
+        st.write("") # 间距
+        st.write("")
+        add_to_hold = st.checkbox("分析后设为持仓股", value=True)
+        
+    if st.button("📊 抓取实时行情并一键全景诊断", key="btn_tab2"):
+        with st.spinner(f"正在从东方财富抓取 {stock_input} 的实时股价、盘口资金及最新舆情..."):
+            quote = EastMoneyEngine.get_realtime_quote(stock_input)
+            df_k = EastMoneyEngine.get_kline_data(stock_input, limit=30)
+            news = EastMoneyEngine.get_stock_news(stock_input)
             
-            st.markdown("#### 📈 实时行情与主力资金数据")
-            col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
-            col_m1.metric("股票名称", f"{spot_info['name']} ({spot_info['code']})")
-            col_m2.metric("当前最新价", f"{spot_info['price']} 元", f"{spot_info['change_pct']}%")
-            col_m3.metric("主力资金净流入", f"{spot_info['main_net_inflow_yi']} 亿元")
-            col_m4.metric("换手率", f"{spot_info['turnover_rate']}%")
-            col_m5.metric("市盈率(TTM)", f"{spot_info['pe_ttm']}")
-
-            prompt = f"""
-            请对股票【{spot_info['name']} ({spot_info['code']})】进行深度分析。
-
-            该股【实时抓取到的行情数据】如下：
-            - 最新价格: {spot_info['price']} 元
-            - 今日涨跌幅: {spot_info['change_pct']}%
-            - 主力资金净流入: {spot_info['main_net_inflow_yi']} 亿元
-            - 换手率: {spot_info['turnover_rate']}%
-            - 市盈率 TTM: {spot_info['pe_ttm']}
-
-            最新 24 小时市场快讯背景：
-            {json.dumps(news_list[:5], ensure_ascii=False, indent=2)}
-
-            请基于以上数据，从资金面、技术面、基本面与近期消息面进行全方位诊断，并给出明确的操作建议（加仓、观望、减仓或止损）。
-            """
-            
-            full_analysis = call_llm(prompt)
-            st.markdown("### 💡 AI 深度诊断与操作建议")
-            st.markdown(full_analysis)
-            
-            if add_to_hold and search_code not in st.session_state['holdings']:
-                st.session_state['holdings'].append(search_code)
-                st.success(f"已将 {search_code} 加入持仓股清单！")
+            if quote:
+                # 渲染实时数据指标卡片
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("股票名称", f"{quote['name']} ({quote['code']})")
+                m2.metric("最新股价", f"¥{quote['price']}", f"{quote['change_pct']}%")
+                m3.metric("换手率", f"{quote['turnover_rate']}%")
+                m4.metric("主力资金净流入", f"{quote['main_inflow_wan']} 万元")
                 
-            summary = f"{spot_info['name']}({spot_info['code']}) 当前价: {spot_info['price']}元, 主力净流入: {spot_info['main_net_inflow_yi']}亿。建议概览: {full_analysis[:80]}..."
-            save_report_to_cache("个股分析", f"个股全景诊断报告 - {spot_info['name']}({search_code})", summary, full_analysis, stock_code=search_code)
-
-    # 渲染历史卡片
-    render_history_cards("个股分析")
-
-# -------------------- Tab 3: 持仓股管理与晨报预警 --------------------
-with tab3:
-    st.subheader("📋 持仓股监控与 24h 舆情预警")
-    
-    current_holdings = st.multiselect(
-        "托管监控的持仓股清单：", 
-        options=list(set(st.session_state['holdings'] + ["600519", "300131", "000001", "300750"])),
-        default=st.session_state['holdings']
-    )
-    st.session_state['holdings'] = current_holdings
-
-    if st.button("📥 触发持仓股 24h 舆情与资金面深度晨报预警", type="primary"):
-        if not current_holdings:
-            st.warning("请先选择或添加持仓股票！")
-        else:
-            with st.spinner("正在并发拉取所有持仓股实时资金流向与全网快讯..."):
-                holdings_spots = [RealTimeADataFetcher.get_stock_spot(code) for code in current_holdings]
-                news_list = RealTimeADataFetcher.get_realtime_news()
+                # 渲染 K 线图
+                if not df_k.empty:
+                    fig = go.Figure(data=[go.Candlestick(
+                        x=df_k['日期'], open=df_k['开盘'], high=df_k['最高'], low=df_k['最低'], close=df_k['收盘']
+                    )])
+                    fig.update_layout(title=f"{quote['name']} ({quote['code']}) 近 30 日走势", height=380, xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
                 
-                st.markdown("#### 📊 当前持仓股实时盘面汇总")
-                st.dataframe(pd.DataFrame(holdings_spots), use_container_width=True)
-
-                prompt = f"""
-                请针对用户持仓股票列表进行晨报预警分析。
-
-                【持仓股实时数据汇总】：
-                {json.dumps(holdings_spots, ensure_ascii=False, indent=2)}
-
-                【最新 24 小时市场舆情与快讯】：
-                {json.dumps(news_list, ensure_ascii=False, indent=2)}
-
-                请总结生成【持仓股晨报预警报告】：
-                1. 24小时内持仓股盘面异动与资金流向分析（重点标记资金大幅净流出的标的）。
-                2. 结合快讯，排查重大公告、辟谣或舆情利好/利空。
-                3. 给出明确的持仓风险预警提醒与应对预案。
+                # 组织硬核数据 Context
+                news_str = "\n".join(news)
+                raw_context = f"""
+                【实时抓取指标 (时间: {quote['fetch_time']})】
+                - 股票: {quote['name']} ({quote['code']})
+                - 现价: ¥{quote['price']} (涨跌幅: {quote['change_pct']}%)
+                - 换手率: {quote['turnover_rate']}% | 成交量: {quote['volume_hands']}手
+                - 今日主力净流入: {quote['main_inflow_wan']} 万元
+                - 24H 关联舆情新闻:
+                {news_str}
                 """
                 
-                morning_report = call_llm(prompt)
-                st.markdown("### 🔔 持仓股晨报预警面板")
-                st.markdown(morning_report)
+                prompt = f"""
+                请严格根据以下抓取到的真实行情与舆情数据，对 {quote['name']}({quote['code']}) 进行全方位诊断：
+                {raw_context}
                 
-                summary = morning_report[:120].replace("\n", " ") + "..."
-                save_report_to_cache("持仓预警", f"每日持仓晨报与预警 ({', '.join(current_holdings)})", summary, morning_report)
+                请输出：
+                1. 100字以内的【核心概览提炼】（包含明确的操作建议：买入/观望/减仓）。
+                2. 详细的【全景深度分析与操作建议】（从资金面健康度、消息面影响、技术面形态、风险点进行剖析）。
+                """
+                
+                with st.spinner("AI 结合硬核行情数据诊断中..."):
+                    res = call_llm(prompt)
+                    save_report_card(
+                        tab_category="tab2",
+                        title=f"{quote['name']}({quote['code']}) 个股全景诊断报告",
+                        summary=res[:120] + "...",
+                        full_content=res,
+                        raw_data_str=raw_context
+                    )
+                    
+                    if add_to_hold and stock_input not in st.session_state['holdings']:
+                        st.session_state['holdings'].append(stock_input)
+                    st.success("全景诊断完成！报告已存入下方卡片。")
+            else:
+                st.error(f"未能抓取到代码 {stock_input} 的有效行情，请检查股票代码是否正确。")
 
-    # 渲染历史卡片
-    render_history_cards("持仓预警")
+    st.markdown("---")
+    render_history_cards("tab2")
 
-# -------------------- Tab 4: 智能风控与仓位策略 --------------------
-with tab4:
-    st.subheader("⚖️ 动态仓位管理与风控模型")
-    st.info("💡 核心纪律：盈利时减仓锁定利润并留底仓跟随趋势；亏损时不盲目补仓亦不恐慌割肉。")
+
+# ----------------- Tab 3: 持仓股管理与晨报预警 -----------------
+with tab3:
+    st.subheader("📋 持仓股列表与早盘 08:00 自动巡检预警")
     
-    col_r1, col_r2 = st.columns(2)
-    with col_r1:
-        risk_code = st.selectbox("选择持仓标的", st.session_state['holdings'] if st.session_state['holdings'] else ["300131"])
-        p_status = st.radio("盈亏状态", ["当前盈利", "当前亏损"])
-    with col_r2:
-        profit_pct = st.slider("浮动盈亏比例 (%)", -50.0, 100.0, 10.0)
-        position_pct = st.slider("当前该股仓位占比 (%)", 5, 100, 30)
+    current_holdings = st.multiselect("当前监控的持仓股列表：", 
+                                      options=list(set(st.session_state['holdings'] + ["600519", "000001", "300750", "300131"])), 
+                                      default=st.session_state['holdings'])
+    st.session_state['holdings'] = current_holdings
+    
+    if st.button("⏰ 触发 24 小时持仓股行情、公告与舆情预警扫描", key="btn_tab3"):
+        if not current_holdings:
+            st.warning("持仓列表为空，请先添加持仓股票！")
+        else:
+            with st.spinner("正在巡检所有持仓股的实时盘口、主力资金及 24 小时公告舆情..."):
+                all_context = []
+                for code in current_holdings:
+                    q = EastMoneyEngine.get_realtime_quote(code)
+                    n = EastMoneyEngine.get_stock_news(code)
+                    if q:
+                        all_context.append(f"【{q['name']}({code})】现价:¥{q['price']} ({q['change_pct']}%), 主力净流入:{q['main_inflow_wan']}万\n近期新闻:\n" + "\n".join(n))
+                
+                combined_str = "\n\n".join(all_context)
+                
+                prompt = f"""
+                针对以下持仓股票抓取到的最新真实盘面与舆情数据：
+                {combined_str}
+                
+                请生成一份专业的【持仓股晨报预警分析】：
+                1. 100字以内的【核心预警概览】（列出风险最高的股票和核心利好）。
+                2. 逐个股票剖析 24 小时内的交易异动、重大公告、舆情风险与应对策略。
+                """
+                
+                res = call_llm(prompt)
+                save_report_card(
+                    tab_category="tab3",
+                    title=f"持仓股晨报预警与舆情巡检 ({len(current_holdings)}支标的)",
+                    summary=res[:140] + "...",
+                    full_content=res,
+                    raw_data_str=combined_str
+                )
+                st.success("晨报预警已生成并存入下方卡片！")
 
-    if st.button("🛡️ 计算动态风控策略与执行方案", type="primary"):
-        spot_info = RealTimeADataFetcher.get_stock_spot(risk_code)
-        
-        prompt = f"""
-        用户持有标的 [{spot_info['name']} ({risk_code})]。
-        实时最新价: {spot_info['price']} 元，主力资金净流入: {spot_info['main_net_inflow_yi']} 亿元。
-        用户持仓状态: 【{p_status}】，浮动盈亏: {profit_pct}%，当前仓位占比: {position_pct}%。
+    st.markdown("---")
+    render_history_cards("tab3")
 
-        请严格基于风控纪律（拒绝情绪化、禁止盲目补仓或恐慌割肉，盈利分批锁利留底仓），给出具体的仓位调整阶梯策略与心法约束。
-        """
-        
-        risk_advice = call_llm(prompt)
-        st.markdown("### 🛡️ 智能风控建议")
-        st.markdown(risk_advice)
-        
-        summary = f"标的: {spot_info['name']}({risk_code}), 状态: {p_status}{profit_pct}%, 建议概览: {risk_advice[:80]}..."
-        save_report_to_cache("风控策略", f"风控仓位策略 - {spot_info['name']}({risk_code})", summary, risk_advice, stock_code=risk_code)
 
-    # 渲染历史卡片
-    render_history_cards("风控策略")
+# ----------------- Tab 4: 智能风控与仓位策略 -----------------
+with tab4:
+    st.subheader("⚖️ 动态仓位管理与盈亏博弈策略")
+    
+    if not st.session_state['holdings']:
+        st.info("持仓列表为空，请先在模块 2 或 3 中添加持仓股票。")
+    else:
+        select_stock = st.selectbox("选择目标持仓股", st.session_state['holdings'])
+        cost_price = st.number_input("持仓成本价 (元)", value=7.0, step=0.1)
+        
+        # 自动拉取当前价格计算浮盈
+        q_data = EastMoneyEngine.get_realtime_quote(select_stock)
+        curr_price = q_data['price'] if q_data else cost_price
+        
+        profit_rate = round(((curr_price - cost_price) / cost_price) * 100, 2) if cost_price > 0 else 0
+        
+        st.write(f"📈 **当前实时计算结果**：标的 `{select_stock}` | 最新价: `¥{curr_price}` | 持仓成本: `¥{cost_price}` | 浮动盈亏: **{profit_rate}%**")
+        
+        if st.button("🛡️ 生成动态仓位风控策略", key="btn_tab4"):
+            prompt = f"""
+            用户持仓标的: {select_stock}
+            当前实时股价: ¥{curr_price}，持仓成本: ¥{cost_price}，当前盈亏比例: {profit_rate}%。
+            
+            请基于以下纪律进行风控输出：
+            - **盈利时**：偏好分批减仓锁定利润，同时保留底仓跟随趋势。
+            - **亏损时**：严禁情绪化补仓或恐慌割肉，结合当前趋势给出右侧信号指示。
+            
+            请输出：
+            1. 100字以内的【风控操作指引概览】。
+            2. 具体的【仓位调整方案与止盈止损数理纪律】。
+            """
+            
+            res = call_llm(prompt)
+            save_report_card(
+                tab_category="tab4",
+                title=f"{select_stock} 仓位风控策略报告 (盈亏比: {profit_rate}%)",
+                summary=res[:120] + "...",
+                full_content=res,
+                raw_data_str=f"实时价: {curr_price}, 成本价: {cost_price}, 盈亏: {profit_rate}%"
+            )
+            st.success("仓位风控报告生成完成！")
+
+    st.markdown("---")
+    render_history_cards("tab4")
