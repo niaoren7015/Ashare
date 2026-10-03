@@ -22,7 +22,7 @@ def get_llm_response(prompt):
     if not api_key:
         return "【系统提示】请先在左侧侧边栏配置有效的 API Key 才能启用 AI 分析报告与策略建议！"
     try:
-        client = OpenAI(api_base=api_base, api_key=api_key)
+        client = OpenAI(base_url=api_base, api_key=api_key)
         response = client.chat.completions.create(
             model=model_name,
             messages=[
