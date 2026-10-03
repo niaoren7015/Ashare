@@ -4,13 +4,18 @@ import akshare as ak
 import plotly.graph_objects as go
 from openai import OpenAI
 from datetime import datetime
+import time
 
-# 页面基本配置
+# ==================== 页面基本配置 ====================
 st.set_page_config(
     page_title="A股智能量化与追踪分析工作流",
     page_icon="📈",
     layout="wide"
 )
+
+# 全局初始化持仓股状态，避免多模块调用时冲突
+if 'holdings' not in st.session_state:
+    st.session_state['holdings'] = []
 
 # ==================== 一、 侧边栏：大模型与API配置 ====================
 st.sidebar.header("⚙️ 模型与接口配置中心")
@@ -22,6 +27,7 @@ def get_llm_response(prompt):
     if not api_key:
         return "【系统提示】请先在左侧侧边栏配置有效的 API Key 才能启用 AI 分析报告与策略建议！"
     try:
+        # 已修复：将 api_base 替换为 base_url 以兼容 openai v1.0.0+
         client = OpenAI(base_url=api_base, api_key=api_key)
         response = client.chat.completions.create(
             model=model_name,
@@ -57,7 +63,8 @@ with tab1:
                 # 获取东财行业资金流向数据
                 sector_money = ak.stock_sector_fund_flow_rank(indicator="今日")
                 top_sectors = sector_money.head(5)["板块"].tolist()
-            except:
+            except Exception as e:
+                # 异常降级兜底
                 top_sectors = ["半导体", "通信设备", "新能源车", "创新药", "国防军工"]
             
             prompt = f"""
@@ -72,7 +79,6 @@ with tab1:
             st.markdown(report)
 
 # ==================== 模块 2：个股分析（搜索选股） ====================
-# ==================== 模块 2：个股分析（搜索选股） ====================
 with tab2:
     st.subheader("🔍 个股全景实时分析诊断")
     col_s1, col_s2 = st.columns([2, 1])
@@ -83,12 +89,10 @@ with tab2:
 
     if st.button("📊 一键全方位分析该股", key="analyze_btn"):
         with st.spinner(f"正在安全连接东方财富/同花顺接口，获取股票 {stock_code} 行情与历史K线..."):
-            import time
-            
             df_history = pd.DataFrame()
             success = False
             
-            # 加入多轮重试机制，应对东方财富服务端的偶发限流与断开
+            # 已优化：加入多轮重试机制，应对东方财富服务端的偶发限流与断开
             for attempt in range(3):
                 try:
                     # 获取历史日线行情
@@ -127,40 +131,43 @@ with tab2:
             st.markdown(ai_analysis)
             
             if is_holding_add:
-                if 'holdings' not in st.session_state:
-                    st.session_state['holdings'] = []
                 if stock_code not in st.session_state['holdings']:
                     st.session_state['holdings'].append(stock_code)
                 st.success(f"成功将 {stock_code} 添加到持仓股管理列表！")
-            except Exception as e:
-                st.error(f"获取数据或分析失败，请检查股票代码是否正确。错误信息: {str(e)}")
 
 # ==================== 模块 3：持仓股管理与晨报预警 ====================
 with tab3:
     st.subheader("📋 持仓股管理与 8:00 自动预警分析")
     
-    # 模拟持仓初始化
-    if 'holdings' not in st.session_state:
-        st.session_state['holdings'] = ["600519", "000001"]
+    # 获取全局状态中的持仓列表，若为空则给默认示例
+    default_holdings = st.session_state['holdings'] if len(st.session_state['holdings']) > 0 else ["600519", "300131"]
         
-    user_holdings = st.multiselect("当前托管监控的持仓股列表：", ["600519", "000001", "300750", "601318", "002594"], default=st.session_state['holdings'])
+    user_holdings = st.multiselect("当前托管监控的持仓股列表：", 
+                                   options=list(set(default_holdings + ["600519", "000001", "300750", "601318", "002594", "300131"])), 
+                                   default=default_holdings)
+    
+    # 同步更新 session state
+    st.session_state['holdings'] = user_holdings
     
     st.markdown("---")
     st.markdown("### ⏰ 每日晨报预警提示面板 (模拟 08:00 自动运行)")
     if st.button("📥 手动触发 24 小时舆情、公告与风险大盘扫描"):
-        with st.spinner("正在整合 24 小时内交易情况、公告大事、舆情小作文、关联政策及国际地缘风险..."):
-            morning_prompt = f"""
-            针对当前用户的持仓股票代码列表: {user_holdings}。
-            请生成一份专业的【每日晨报分析概览】，内容严格包含：
-            1. 24小时内核心交易情况与盘面异动追踪。
-            2. 重大公司公告梳理。
-            3. 市场舆情监测（包含小作文辟谣或确认）。
-            4. 关联市场板块政策变动及国际地缘政治风险提醒。
-            5. 利好消息同步播报。
-            """
-            morning_report = get_llm_response(morning_prompt)
-            st.info("【系统提示】早晨 08:00 定时自动巡检报告已生成：")
-            st.markdown(morning_report)
+        if not user_holdings:
+            st.warning("您的持仓列表为空，请先在上方或模块 2 中添加持仓股票！")
+        else:
+            with st.spinner("正在整合 24 小时内交易情况、公告大事、舆情小作文、关联政策及国际地缘风险..."):
+                morning_prompt = f"""
+                针对当前用户的持仓股票代码列表: {user_holdings}。
+                请生成一份专业的【每日晨报分析概览】，内容严格包含：
+                1. 24小时内核心交易情况与盘面异动追踪。
+                2. 重大公司公告梳理。
+                3. 市场舆情监测（包含小作文辟谣或确认）。
+                4. 关联市场板块政策变动及国际地缘政治风险提醒。
+                5. 利好消息同步播报。
+                """
+                morning_report = get_llm_response(morning_prompt)
+                st.info("【系统提示】早晨 08:00 定时自动巡检报告已生成：")
+                st.markdown(morning_report)
 
 # ==================== 模块 4：智能风控与仓位管理策略 ====================
 with tab4:
@@ -171,17 +178,20 @@ with tab4:
     > * **亏损时**：严禁情绪化博弈，不轻易在下跌趋势中盲目补仓，也不得盲目恐慌割肉，严格执行仓位管理。
     """)
     
-    c_code = st.selectbox("选择需要计算风控策略的持仓股", st.session_state.get('holdings', ["600519"]))
-    p_status = st.radio("当前盈亏状态", ["当前处于盈利状态", "当前处于亏损套牢状态"])
-    profit_pct = st.slider("当前浮动盈亏比例 (%)", -50.0, 100.0, 10.0)
-    
-    if st.button("🛡️ 生成动态仓位风控与操作策略"):
-        risk_prompt = f"""
-        用户持有股票 {c_code}，目前状态为【{p_status}】，盈亏比例为 {profit_pct}%。
-        请结合严格的仓位管理纪律（拒绝情绪化、禁止盲目补仓或恐慌割肉、盈利时分批锁定且留底仓）：
-        1. 针对该盈亏状态，给出具体的降仓、止盈、或持股静观的数理与策略指导。
-        2. 给出一套明晰的心理与执行纪律约束，防止情绪化博弈。
-        """
-        risk_advice = get_llm_response(risk_prompt)
-        st.warning("⚠️ 智能风控与仓位执行建议：")
-        st.markdown(risk_advice)
+    if len(st.session_state['holdings']) == 0:
+        st.info("尚未添加任何持仓股，请先在模块 2 搜索并添加持仓股票。")
+    else:
+        c_code = st.selectbox("选择需要计算风控策略的持仓股", st.session_state['holdings'])
+        p_status = st.radio("当前盈亏状态", ["当前处于盈利状态", "当前处于亏损套牢状态"])
+        profit_pct = st.slider("当前浮动盈亏比例 (%)", -50.0, 100.0, 10.0)
+        
+        if st.button("🛡️ 生成动态仓位风控与操作策略"):
+            risk_prompt = f"""
+            用户持有股票 {c_code}，目前状态为【{p_status}】，盈亏比例为 {profit_pct}%。
+            请结合严格的仓位管理纪律（拒绝情绪化、禁止盲目补仓或恐慌割肉、盈利时分批锁定且留底仓）：
+            1. 针对该盈亏状态，给出具体的降仓、止盈、或持股静观的数理与策略指导。
+            2. 给出一套明晰的心理与执行纪律约束，防止情绪化博弈。
+            """
+            risk_advice = get_llm_response(risk_prompt)
+            st.warning("⚠️ 智能风控与仓位执行建议：")
+            st.markdown(risk_advice)
