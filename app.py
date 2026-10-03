@@ -14,12 +14,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# 初始化浏览器 Cookie 管理器 (使用 cache_resource 确保全局只实例化一次)
-@st.cache_resource
-def get_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_manager()
+# 初始化浏览器 Cookie 管理器 (直接实例化，去除缓存装饰器避免 CachedWidgetWarning)
+cookie_manager = stx.CookieManager()
 
 # 全局初始化持仓股状态，避免多模块调用时冲突
 if 'holdings' not in st.session_state:
