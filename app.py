@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from openai import OpenAI
 from datetime import datetime
 import time
+import extra_streamlit_components as stx  # 新增：用于调用本地浏览器存储
 
 # ==================== 页面基本配置 ====================
 st.set_page_config(
@@ -13,21 +14,42 @@ st.set_page_config(
     layout="wide"
 )
 
+# 初始化浏览器 Cookie 管理器 (使用 cache_resource 确保全局只实例化一次)
+@st.cache_resource
+def get_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_manager()
+
 # 全局初始化持仓股状态，避免多模块调用时冲突
 if 'holdings' not in st.session_state:
     st.session_state['holdings'] = []
 
-# ==================== 一、 侧边栏：大模型与API配置 ====================
+# ==================== 一、 侧边栏：大模型与API配置（本地缓存版） ====================
 st.sidebar.header("⚙️ 模型与接口配置中心")
-api_base = st.sidebar.text_input("API 接口地址 (Base URL)", value="https://api.deepseek.com/v1")
-api_key = st.sidebar.text_input("API Key", type="password", value="")
-model_name = st.sidebar.text_input("模型名称 (Model)", value="deepseek-chat")
+st.sidebar.markdown("*(配置仅保存在您的本地浏览器，不会上传至云端)*")
+
+# 尝试从本地浏览器读取历史配置，如果没有则使用默认值
+saved_api_base = cookie_manager.get(cookie="api_base") or "https://api.deepseek.com/v1"
+saved_api_key = cookie_manager.get(cookie="api_key") or ""
+saved_model_name = cookie_manager.get(cookie="model_name") or "deepseek-chat"
+
+# 渲染输入框，默认值设为本地读取的值
+api_base = st.sidebar.text_input("API 接口地址 (Base URL)", value=saved_api_base)
+api_key = st.sidebar.text_input("API Key", type="password", value=saved_api_key)
+model_name = st.sidebar.text_input("模型名称 (Model)", value=saved_model_name)
+
+# 增加“保存到本地”按钮
+if st.sidebar.button("💾 记住我的配置"):
+    cookie_manager.set("api_base", api_base, key="set_base")
+    cookie_manager.set("api_key", api_key, key="set_key")
+    cookie_manager.set("model_name", model_name, key="set_model")
+    st.sidebar.success("✅ 配置已安全保存在本地浏览器！刷新网页不再丢失。")
 
 def get_llm_response(prompt):
     if not api_key:
         return "【系统提示】请先在左侧侧边栏配置有效的 API Key 才能启用 AI 分析报告与策略建议！"
     try:
-        # 已修复：将 api_base 替换为 base_url 以兼容 openai v1.0.0+
         client = OpenAI(base_url=api_base, api_key=api_key)
         response = client.chat.completions.create(
             model=model_name,
