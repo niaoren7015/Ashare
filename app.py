@@ -72,55 +72,66 @@ with tab1:
             st.markdown(report)
 
 # ==================== 模块 2：个股分析（搜索选股） ====================
+# ==================== 模块 2：个股分析（搜索选股） ====================
 with tab2:
     st.subheader("🔍 个股全景实时分析诊断")
     col_s1, col_s2 = st.columns([2, 1])
     with col_s1:
-        stock_code = st.text_input("输入6位A股代码 (例如: 600519 或 000001)", value="600519")
+        stock_code = st.text_input("输入6位A股代码 (例如: 600519 或 300131)", value="300131")
     with col_s2:
-        is_holding_add = st.checkbox("设为我的持仓股")
+        is_holding_add = st.checkbox("设为我的持仓股", key="add_holding_cb")
 
-    if st.button("📊 一键全方位分析该股"):
-        with st.spinner(f"正在获取股票 {stock_code} 的实时走势、成交量及历史K线..."):
-            try:
-                # 获取历史日线行情
-                df_history = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date="20250101", adjust="qfq")
-                # 获取实时行情
-                stock_spot = ak.stock_zh_a_spot_em()
-                stock_info = stock_spot[stock_spot['代码'] == stock_code]
-                
-                if not df_history.empty:
-                    # 绘制K线与成交量图表
-                    fig = go.Figure(data=[go.Candlestick(
-                        x=df_history['日期'],
-                        open=df_history['开盘'],
-                        high=df_history['最高'],
-                        low=df_history['最低'],
-                        close=df_history['收盘'],
-                        name='K线'
-                    )])
-                    fig.update_layout(title=f"{stock_code} 历史走势与K线图", xaxis_rangeslider_visible=False, height=400)
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                # 组装大模型深度诊断
-                stock_detail_prompt = f"""
-                请对A股股票代码 {stock_code} 进行全面分析。
-                要求包含：
-                1. 实时走势与成交量健康度评估。
-                2. 技术面与基本面（业绩、行业地位）综合诊断。
-                3. 给出明确的操作建议（买入、观望、减仓、止损）。
-                """
-                ai_analysis = get_llm_response(stock_detail_prompt)
-                st.markdown("### 💡 AI 全方位诊断与操作建议")
-                st.markdown(ai_analysis)
-                
-                if is_holding_add:
-                    # 写入临时持仓记录（实际部署可存入数据库或Session State）
-                    if 'holdings' not in st.session_state:
-                        st.session_state['holdings'] = []
-                    if stock_code not in st.session_state['holdings']:
-                        st.session_state['holdings'].append(stock_code)
-                    st.success(f"成功将 {stock_code} 添加到持仓股管理列表！")
+    if st.button("📊 一键全方位分析该股", key="analyze_btn"):
+        with st.spinner(f"正在安全连接东方财富/同花顺接口，获取股票 {stock_code} 行情与历史K线..."):
+            import time
+            
+            df_history = pd.DataFrame()
+            success = False
+            
+            # 加入多轮重试机制，应对东方财富服务端的偶发限流与断开
+            for attempt in range(3):
+                try:
+                    # 获取历史日线行情
+                    df_history = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date="20250101", adjust="qfq")
+                    if not df_history.empty:
+                        success = True
+                        break
+                except Exception as e:
+                    time.sleep(1.5 * (attempt + 1)) # 失败后退避等待
+            
+            if success and not df_history.empty:
+                # 绘制K线与成交量图表
+                fig = go.Figure(data=[go.Candlestick(
+                    x=df_history['日期'],
+                    open=df_history['开盘'],
+                    high=df_history['最高'],
+                    low=df_history['最低'],
+                    close=df_history['收盘'],
+                    name='K线'
+                )])
+                fig.update_layout(title=f"{stock_code} 历史走势与K线图", xaxis_rangeslider_visible=False, height=400)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("⚠️ 实时网络接口连接波动，未能成功拉取到该股的K线明细。系统将直接基于大模型知识库为您进行该股全景深度诊断：")
+            
+            # 组装大模型深度诊断（即便网络接口偶发超时，AI 也能基于代码与宏观给出专业分析）
+            stock_detail_prompt = f"""
+            请对A股股票代码 {stock_code} 进行全面分析。
+            要求包含：
+            1. 该股票所属概念板块、主营业务及近期市场表现评估。
+            2. 技术面与基本面（业绩、行业地位）综合诊断。
+            3. 给出明确的操作建议（买入、观望、减仓、止损）。
+            """
+            ai_analysis = get_llm_response(stock_detail_prompt)
+            st.markdown("### 💡 AI 全方位诊断与操作建议")
+            st.markdown(ai_analysis)
+            
+            if is_holding_add:
+                if 'holdings' not in st.session_state:
+                    st.session_state['holdings'] = []
+                if stock_code not in st.session_state['holdings']:
+                    st.session_state['holdings'].append(stock_code)
+                st.success(f"成功将 {stock_code} 添加到持仓股管理列表！")
             except Exception as e:
                 st.error(f"获取数据或分析失败，请检查股票代码是否正确。错误信息: {str(e)}")
 
