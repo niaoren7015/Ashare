@@ -3,7 +3,6 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import plotly.graph_objects as go
 from openai import OpenAI
 from datetime import datetime, timedelta
 import uuid
@@ -15,17 +14,17 @@ st.set_page_config(page_title="A股智能投资管理与追踪分析工作流", 
 cookie_manager = stx.CookieManager()
 
 if 'reports' not in st.session_state: st.session_state['reports'] = []
+# 默认关注核心个股
 if 'holdings' not in st.session_state: st.session_state['holdings'] = ["300131"] 
 
 # 自动清理3天前的过期报告
 now = datetime.now()
 st.session_state['reports'] = [r for r in st.session_state['reports'] if now - r['created_at'] < timedelta(days=3)]
 
-# ==================== 2. 增强版全天候真实数据引擎 (DataEngine 2.0) ====================
+# ==================== 2. 全天候长假容灾版数据引擎 (DataEngine 3.0) ====================
 class DataEngine:
-    # 加入重试机制，防止 RemoteDisconnected
     session = requests.Session()
-    retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[ 500, 502, 503, 504 ])
+    retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
     session.mount('http://', HTTPAdapter(max_retries=retries))
     session.mount('https://', HTTPAdapter(max_retries=retries))
     
@@ -36,7 +35,6 @@ class DataEngine:
 
     @staticmethod
     def _safe_float(val, default=0.0):
-        """修复周末和停盘期间 API 返回 '-' 导致崩溃的核心问题"""
         if val in [None, '-', '', 'null']: return default
         try: return float(val)
         except: return default
@@ -47,19 +45,41 @@ class DataEngine:
         return f"1.{code}" if code.startswith(('6', '688', '900')) else f"0.{code}"
 
     @classmethod
+    def get_kline_data(cls, code: str, limit: int = 30):
+        """K线接口极为稳定，作为长假期间的终极兜底数据源"""
+        secid = cls.get_secid(code)
+        url = f"http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=101&fqt=1&end=20500101&lmt={limit}"
+        try:
+            resp = cls.session.get(url, headers=cls.HEADERS, timeout=4)
+            klines = resp.json().get('data', {}).get('klines', [])
+            records = [{"日期": p.split(',')[0], "开盘": float(p.split(',')[1]), "收盘": float(p.split(',')[2]), "最高": float(p.split(',')[3]), "最低": float(p.split(',')[4])} for p in klines]
+            return pd.DataFrame(records)
+        except: return pd.DataFrame()
+
+    @classmethod
     def get_market_overview(cls):
-        """拉取真实大盘指数"""
         url = "http://push2.eastmoney.com/api/qt/ulist.np/get?secids=1.000001,0.399001,0.399006&fields=f2,f3,f14"
         try:
             resp = cls.session.get(url, headers=cls.HEADERS, timeout=5)
-            items = resp.json().get('data', {}).get('diff', [])
-            res = [f"{it.get('f14')}: {cls._safe_float(it.get('f2'))} ({cls._safe_float(it.get('f3'))}%)" for it in items]
-            return " | ".join(res) if res else "大盘数据暂无"
+            data_block = resp.json().get('data')
+            items = data_block.get('diff', []) if data_block else []
+            if items:
+                res = [f"{it.get('f14')}: {cls._safe_float(it.get('f2'))} ({cls._safe_float(it.get('f3'))}%)" for it in items]
+                return " | ".join(res)
+            # 长假兜底机制：实时接口失效时，提取历史 K 线最近一日数据
+            res = []
+            for code, name in [("000001", "上证指数"), ("399001", "深证成指"), ("399006", "创业板指")]:
+                df = cls.get_kline_data(code, limit=2)
+                if len(df) >= 2:
+                    last_close = df.iloc[-1]['收盘']
+                    prev_close = df.iloc[-2]['收盘']
+                    change = round((last_close - prev_close) / prev_close * 100, 2)
+                    res.append(f"{name} (历史): {last_close} ({change}%)")
+            return " | ".join(res) if res else "大盘数据获取失败"
         except: return "大盘数据获取失败"
 
     @classmethod
     def get_macro_news(cls):
-        """拉取新浪财经 7x24 真实宏观动态"""
         url = "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2509&k=&num=5&page=1"
         try:
             resp = cls.session.get(url, headers=cls.HEADERS, timeout=5)
@@ -69,59 +89,82 @@ class DataEngine:
 
     @classmethod
     def get_top_sectors_with_stocks(cls):
-        """向下穿透：抓取主力流入Top3板块，并在每个板块中抓取Top3资金龙头个股"""
         url = "http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=3&po=1&np=1&ut=b2884753fe08f51d4e9c22b760614ca7&fltt=2&invt=2&fid=f62&fs=m:90+t:2&fields=f12,f14,f2,f3,f62"
         try:
             resp = cls.session.get(url, headers=cls.HEADERS, timeout=5)
-            sectors = resp.json().get('data', {}).get('diff', [])
+            data_block = resp.json().get('data')
+            
+            # 长假降级机制一：资金流 f62 为空，切换为涨跌幅 f3 排序
+            if not data_block:
+                fallback_url = url.replace("fid=f62", "fid=f3")
+                resp = cls.session.get(fallback_url, headers=cls.HEADERS, timeout=5)
+                data_block = resp.json().get('data')
+                
+            if not data_block: return pd.DataFrame()
+            
+            sectors = data_block.get('diff', []) or []
             result = []
             for sec in sectors:
                 sec_code, sec_name = sec.get('f12'), sec.get('f14')
                 sec_change = cls._safe_float(sec.get('f3'))
-                sec_inflow = cls._safe_float(sec.get('f62')) / 100000000.0 # 亿元
+                sec_inflow = cls._safe_float(sec.get('f62')) / 100000000.0
                 
-                # 穿透查询该板块内的龙头股
                 s_url = f"http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=3&po=1&np=1&ut=b2884753fe08f51d4e9c22b760614ca7&fltt=2&invt=2&fid=f62&fs=b:{sec_code}&fields=f12,f14,f2,f3,f62"
                 s_resp = cls.session.get(s_url, headers=cls.HEADERS, timeout=5)
-                stocks = s_resp.json().get('data', {}).get('diff', [])
-                stock_list = [f"{st.get('f14')}({st.get('f12')}): 现价{cls._safe_float(st.get('f2'))}, 涨幅{cls._safe_float(st.get('f3'))}%, 净流入{cls._safe_float(st.get('f62'))/100000000.0:.2f}亿" for st in stocks]
+                s_data = s_resp.json().get('data')
+                
+                # 板块内个股资金排序降级
+                if not s_data:
+                    s_fallback_url = s_url.replace("fid=f62", "fid=f3")
+                    s_resp = cls.session.get(s_fallback_url, headers=cls.HEADERS, timeout=5)
+                    s_data = s_resp.json().get('data')
+                    
+                stocks = s_data.get('diff', []) if s_data else []
+                stock_list = [f"{st.get('f14')}({st.get('f12')}): 现价{cls._safe_float(st.get('f2'))}, 涨幅{cls._safe_float(st.get('f3'))}%" for st in stocks]
                 
                 result.append({
                     "板块名称": sec_name, "板块涨幅": f"{sec_change}%",
-                    "板块主力净流入": f"{sec_inflow:.2f}亿", "资金龙头标的": " | ".join(stock_list)
+                    "主力净流入": f"{sec_inflow:.2f}亿" if sec_inflow != 0 else "休盘暂无", 
+                    "龙头标的": " | ".join(stock_list)
                 })
             return pd.DataFrame(result)
-        except Exception as e: return pd.DataFrame()
+        except Exception: return pd.DataFrame()
 
     @classmethod
     def get_realtime_quote(cls, code: str):
-        """采用 ulist 底层无缩放接口，确保价格准确无误"""
         secid = cls.get_secid(code)
         url = f"http://push2.eastmoney.com/api/qt/ulist.np/get?secids={secid}&fields=f2,f3,f8,f12,f14,f47,f58,f62,f168"
         try:
             resp = cls.session.get(url, headers=cls.HEADERS, timeout=5)
-            items = resp.json().get('data', {}).get('diff', [])
-            if not items: return None
-            data = items[0]
-            return {
-                "code": code, "name": data.get('f14') or data.get('f58', '未知'),
-                "price": cls._safe_float(data.get('f2')), "change_pct": cls._safe_float(data.get('f3')),
-                "volume_hands": cls._safe_float(data.get('f47')), "turnover_rate": cls._safe_float(data.get('f8')) or cls._safe_float(data.get('f168')),
-                "main_inflow_wan": round(cls._safe_float(data.get('f62')) / 10000.0, 2),
-                "fetch_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-        except: return None
-        
-    @classmethod
-    def get_kline_data(cls, code: str, limit: int = 30):
-        secid = cls.get_secid(code)
-        url = f"http://push2.eastmoney.com/api/qt/stock/kline/get?secid={secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=101&fqt=1&end=20500101&lmt={limit}"
-        try:
-            resp = cls.session.get(url, headers=cls.HEADERS, timeout=4)
-            klines = resp.json().get('data', {}).get('klines', [])
-            records = [{"日期": p.split(',')[0], "开盘": float(p.split(',')[1]), "收盘": float(p.split(',')[2]), "最高": float(p.split(',')[3]), "最低": float(p.split(',')[4])} for p in klines]
-            return pd.DataFrame(records)
-        except: return pd.DataFrame()
+            data_block = resp.json().get('data')
+            items = data_block.get('diff', []) if data_block else []
+            
+            # 正常获取
+            if items:
+                data = items[0]
+                return {
+                    "code": code, "name": data.get('f14') or data.get('f58', '未知'),
+                    "price": cls._safe_float(data.get('f2')), "change_pct": cls._safe_float(data.get('f3')),
+                    "volume_hands": cls._safe_float(data.get('f47')), "turnover_rate": cls._safe_float(data.get('f8')) or cls._safe_float(data.get('f168')),
+                    "main_inflow_wan": round(cls._safe_float(data.get('f62')) / 10000.0, 2),
+                    "fetch_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+            
+            # 长假兜底机制二：实时数据完全断联，利用日线 K 线拼装最新一日数据
+            df_k = cls.get_kline_data(code, limit=2)
+            if len(df_k) >= 2:
+                last_day = df_k.iloc[-1]
+                prev_day = df_k.iloc[-2]
+                change_pct = round((last_day['收盘'] - prev_day['收盘']) / prev_day['收盘'] * 100, 2)
+                return {
+                    "code": code, "name": f"{code}",
+                    "price": last_day['收盘'], "change_pct": change_pct,
+                    "volume_hands": 0.0, "turnover_rate": 0.0,
+                    "main_inflow_wan": 0.0,
+                    "fetch_time": f"{last_day['日期']} (长假停盘静默期)"
+                }
+            return None
+        except Exception: return None
 
     @classmethod
     def get_stock_news(cls, code: str):
@@ -194,7 +237,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["🔥 1. 掘金选股与板块推荐", "🔍 2
 with tab1:
     st.subheader("🤖 基于真实资金流向与宏观穿透掘金")
     if st.button("🚀 抓取【宏观->大盘->龙头股】数据树并生成报告"):
-        with st.spinner("正在直连拉取大盘指数、新浪宏观新闻及东财底层个股资金面..."):
+        with st.spinner("正在直连拉取大盘指数、新浪宏观新闻及底层个股数据..."):
             macro_idx = DataEngine.get_market_overview()
             macro_news = "\n".join(DataEngine.get_macro_news())
             df_sectors = DataEngine.get_top_sectors_with_stocks()
@@ -205,41 +248,40 @@ with tab1:
                 sector_str = df_sectors.to_string(index=False)
                 
                 prompt = f"""
-                【实时硬核数据锚定】
+                【实时/长假硬核数据锚定】
                 大盘概况: {macro_idx}
                 最新宏观新闻:
                 {macro_news}
                 
-                当前资金净流入最强板块及板块内龙头标的明细:
+                当前净流入或涨幅最强板块及板块内龙头标的明细:
                 {sector_str}
                 
                 **你必须严格且仅基于上述抓取到的板块和标的进行分析，绝不能脱离上述列表捏造股票！**
-                1. 结合宏观新闻与大盘，分析上述资金流入板块的安全边际。
-                2. 从上述提供的“资金龙头标的”中，优选 2 只进行重点推荐，并说明操作理由。
+                1. 结合宏观新闻与大盘，分析上述强势板块的安全边际或假期情绪发酵情况。
+                2. 从上述提供的“龙头标的”中，优选 2 只进行重点推荐复盘，并说明理由。
                 """
                 with st.spinner("AI 大模型正在锚定硬核数据进行研判..."):
                     res = call_llm(prompt)
                     save_report_card("tab1", "A股宏观资金掘金与优选标的推荐报告", res[:150] + "...", res, f"大盘:{macro_idx}\n新闻:{macro_news}\n{sector_str}")
-                    st.success("分析完成！已杜绝幻觉，基于真实抓取的数据树生成。")
+                    st.success("分析完成！已突破假期壁垒，基于真实抓取的数据树生成。")
             else:
-                st.error("行情抓取失败，请检查网络或是否处于清算维护时段。")
+                st.error("行情抓取失败，请检查网络。")
     render_history_cards("tab1")
 
 with tab2:
-    st.subheader("🔍 个股全景实时分析诊断")
+    st.subheader("🔍 个股全景诊断 (支持节假日复盘)")
     col1, col2 = st.columns([2, 1])
     with col1: stock_input = st.text_input("输入 A 股代码", value="300131")
     with col2: add_to_hold = st.checkbox("分析后设为持仓股", value=True)
         
-    if st.button("📊 抓取实时行情并诊断"):
-        with st.spinner("安全抓取实时盘口与 24H 舆情..."):
+    if st.button("📊 抓取行情并诊断"):
+        with st.spinner("安全抓取盘口与 24H 舆情..."):
             quote = DataEngine.get_realtime_quote(stock_input)
-            df_k = DataEngine.get_kline_data(stock_input, limit=30)
             news = "\n".join(DataEngine.get_stock_news(stock_input))
             
             if quote:
-                st.write(f"📈 `{quote['name']} ({quote['code']})` | 现价: **¥{quote['price']}** | 涨跌: **{quote['change_pct']}%** | 主力流入: **{quote['main_inflow_wan']}万元**")
-                raw_context = f"股票:{quote['name']}({quote['code']})\n现价:¥{quote['price']} ({quote['change_pct']}%)\n主力净流入:{quote['main_inflow_wan']}万元\n舆情:\n{news}"
+                st.write(f"📈 `{quote['name']} ({quote['code']})` | 收盘/现价: **¥{quote['price']}** | 涨跌: **{quote['change_pct']}%** | {quote['fetch_time']}")
+                raw_context = f"股票:{quote['name']}({quote['code']})\n现价:¥{quote['price']} ({quote['change_pct']}%)\n舆情:\n{news}"
                 prompt = f"请严格基于以下抓取到的真实数据对 {quote['name']}({quote['code']}) 进行诊断：\n{raw_context}\n给出综合诊断和明确操作建议。"
                 
                 res = call_llm(prompt)
@@ -249,22 +291,22 @@ with tab2:
     render_history_cards("tab2")
 
 with tab3:
-    st.subheader("📋 自动巡检早盘预警")
+    st.subheader("📋 自动巡检早盘/休市预警")
     current_holdings = st.multiselect("当前持仓：", list(set(st.session_state['holdings'] + ["300131"])), default=st.session_state['holdings'])
     st.session_state['holdings'] = current_holdings
     
-    if st.button("⏰ 触发 24H 舆情与资金流扫描"):
+    if st.button("⏰ 触发 24H 舆情与资金面扫描"):
         with st.spinner("巡检持仓股真实盘口与舆情中..."):
             all_context = []
             for code in current_holdings:
                 q = DataEngine.get_realtime_quote(code)
                 n = "\n".join(DataEngine.get_stock_news(code))
-                if q: all_context.append(f"【{q['name']}({code})】现价:¥{q['price']} ({q['change_pct']}%), 流入:{q['main_inflow_wan']}万\n舆情:{n}")
+                if q: all_context.append(f"【{q['name']}({code})】现价/收盘:¥{q['price']} ({q['change_pct']}%)\n舆情:{n}")
             
             combined_str = "\n\n".join(all_context)
-            prompt = f"针对以下持仓股的真实盘面与舆情数据：\n{combined_str}\n请生成持仓股晨报预警，剖析异动与风险策略。"
+            prompt = f"针对以下持仓股的真实盘面与舆情数据：\n{combined_str}\n请生成持仓股预警报告，剖析异动、发酵消息与长假/早盘应对策略。"
             res = call_llm(prompt)
-            save_report_card("tab3", f"持仓晨报预警 ({len(current_holdings)}支)", res[:120] + "...", res, combined_str)
+            save_report_card("tab3", f"持仓巡检预警 ({len(current_holdings)}支)", res[:120] + "...", res, combined_str)
     render_history_cards("tab3")
 
 with tab4:
@@ -274,6 +316,7 @@ with tab4:
         select_stock = st.selectbox("选择风控标的", st.session_state['holdings'], index=st.session_state['holdings'].index("300131") if "300131" in st.session_state['holdings'] else 0)
         col_a, col_b = st.columns(2)
         with col_a: cost_price = st.number_input("持仓成本价 (元)", value=6.5, step=0.1)
+        # 默认匹配你 300131 的 30000 股底仓
         with col_b: volume = st.number_input("持仓数量 (股)", value=30000, step=1000)
         
         q_data = DataEngine.get_realtime_quote(select_stock)
@@ -283,7 +326,7 @@ with tab4:
         st.write(f"📈 `{select_stock}` | 最新价: `¥{curr_price}` | 成本: `¥{cost_price}` | 浮动盈亏: **{profit_rate}%**")
         
         if st.button("🛡️ 生成动态仓位策略"):
-            prompt = f"持仓:{select_stock}, 当前价:¥{curr_price}, 成本:¥{cost_price}, 股数:{volume}股, 盈亏比:{profit_rate}%。\n请基于不恐慌割肉、留底仓跟随趋势的原则，给出具体的量化减仓/止盈/补仓计算建议。"
+            prompt = f"持仓:{select_stock}, 当前价:¥{curr_price}, 成本:¥{cost_price}, 股数:{volume}股, 盈亏比:{profit_rate}%。\n请基于不恐慌割肉、留底仓跟随趋势的原则，结合当前盈亏状态，给出具体的量化减仓/止盈/补仓计算建议。"
             res = call_llm(prompt)
             save_report_card("tab4", f"{select_stock} 仓位策略 (盈亏: {profit_rate}%)", res[:120] + "...", res, f"价:{curr_price}, 本:{cost_price}, 量:{volume}, 盈亏:{profit_rate}%")
     render_history_cards("tab4")
