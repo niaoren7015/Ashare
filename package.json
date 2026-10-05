@@ -1,0 +1,1 @@
+{"name":"a-share-ai-tracker","version":"0.2.0","private":true,"type":"module","scripts":{"deploy":"wrangler deploy","check":"wrangler deploy --dry-run"},"devDependencies":{"wrangler":"^4.0.0"}}
