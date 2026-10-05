@@ -359,7 +359,7 @@ elif nav_option == "🔍 个股全方位深度分析":
 请针对给定的股票实时数据，给出专业、深度、切中要害的研判说明，避免套话。"""
 
                 user_prompt = f"""
-请对股票【{quote['name']} ({quote['code']})}】进行全方位研判。
+f"请对股票【{quote['name']} ({quote['code']})】进行全方位研判。"
 
 【实时交易数据】：
 - 当前价: {quote['price']}元 | 涨跌幅: {quote['pct_change']:.2f}% | 昨收: {quote['prev_close']}元
