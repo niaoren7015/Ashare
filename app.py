@@ -4,6 +4,7 @@ import requests
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 from datetime import datetime, timedelta
 
@@ -52,11 +53,11 @@ def fetch_realtime_quote(code: str) -> dict:
     }
     try:
         resp = requests.get(url, params=params, timeout=4)
-        data = resp.json().get("data", {})
+        res_json = resp.json()
+        data = res_json.get("data") or {}
         if not data:
             return {}
         
-        # 东方财富数值除以 100/1000 处理
         price = data.get("f43", 0) / 100.0 if data.get("f43") != "-" else 0
         prev_close = data.get("f60", 0) / 100.0 if data.get("f60") != "-" else 0
         high = data.get("f44", 0) / 100.0 if data.get("f44") != "-" else 0
@@ -78,12 +79,12 @@ def fetch_realtime_quote(code: str) -> dict:
             "prev_close": prev_close,
             "volume": data.get("f47", 0),  # 成交量(手)
             "amount": data.get("f48", 0),  # 成交额(元)
-            "turnover_rate": data.get("f168", 0) / 100.0, # 换手率%
-            "pe": data.get("f162", 0) / 100.0, # 动态市盈率
-            "pb": data.get("f167", 0) / 100.0, # 市净率
+            "turnover_rate": (data.get("f168", 0) or 0) / 100.0, # 换手率%
+            "pe": (data.get("f162", 0) or 0) / 100.0, # 动态市盈率
+            "pb": (data.get("f167", 0) or 0) / 100.0, # 市净率
             "total_mv": data.get("f116", 0), # 总市值
         }
-    except Exception as e:
+    except Exception:
         return {}
 
 @st.cache_data(ttl=60)
@@ -102,12 +103,12 @@ def fetch_kline_data(code: str, limit: int = 100) -> pd.DataFrame:
     }
     try:
         resp = requests.get(url, params=params, timeout=5)
-        data = resp.json().get("data", {})
+        res_json = resp.json()
+        data = res_json.get("data") or {}
         klines = data.get("klines", [])
         
         rows = []
         for k in klines:
-            # 日期,开盘,收盘,最高,最低,成交量,成交额,振幅,涨跌幅,涨跌额,换手率
             parts = k.split(",")
             rows.append({
                 "Date": parts[0],
@@ -122,12 +123,11 @@ def fetch_kline_data(code: str, limit: int = 100) -> pd.DataFrame:
         df = pd.DataFrame(rows)
         if not df.empty:
             df["Date"] = pd.to_datetime(df["Date"])
-            # 计算均线
             df["MA5"] = df["Close"].rolling(5).mean()
             df["MA20"] = df["Close"].rolling(20).mean()
             df["MA60"] = df["Close"].rolling(60).mean()
         return df
-    except Exception as e:
+    except Exception:
         return pd.DataFrame()
 
 @st.cache_data(ttl=120)
@@ -160,12 +160,14 @@ def fetch_market_news_and_sectors() -> dict:
             "fields": "f12,f14,f2,f3,f62,f184"
         }
         resp = requests.get(url_sector, params=params, timeout=4)
-        diff = resp.json().get("data", {}).get("diff", [])
+        res_json = resp.json()
+        data = res_json.get("data") or {}
+        diff = data.get("diff", [])
         for d in diff:
             sector_ranks.append({
                 "sector_name": d.get("f14"),
                 "pct_change": d.get("f3"),
-                "main_fund_inflow_m": round(d.get("f62", 0) / 10000, 2), # 转换为万元
+                "main_fund_inflow_m": round((d.get("f62", 0) or 0) / 10000, 2), # 转换为万元
                 "main_fund_ratio": d.get("f184", 0)
             })
     except Exception:
@@ -177,9 +179,7 @@ def fetch_market_news_and_sectors() -> dict:
 # 3. 通用自定义 LLM API 调用模块
 # ==========================================
 def call_custom_llm(base_url: str, api_key: str, model_name: str, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> str:
-    """
-    通用 OpenAI 兼容接口调用逻辑（支持 DeepSeek, Qwen, OpenAI, Kimi, SiliconFlow 等）
-    """
+    """通用 OpenAI 兼容接口调用逻辑"""
     if not api_key:
         return "⚠️ 请先在左侧边栏填写您的 大模型 API Key。"
     
@@ -306,11 +306,18 @@ elif nav_option == "🔍 个股全方位深度分析":
         m5.metric("市盈率(动)", f"{quote['pe']:.2f}")
         m6.metric("市净率", f"{quote['pb']:.2f}")
         
-        # 2. 绘制 Plotly 交互式 K 线图
+        # 2. 绘制 Plotly 交互式 K 线图 + 成交量副图
         df_kline = fetch_kline_data(stock_code)
         if not df_kline.empty:
-            fig = go.Figure()
-            # K线
+            fig = make_subplots(
+                rows=2, cols=1, 
+                shared_xaxes=True, 
+                vertical_spacing=0.03, 
+                subplot_titles=(f"{quote['name']} ({quote['code']}) 历史K线与均线", "成交量 (手)"),
+                row_width=[0.25, 0.75]
+            )
+            
+            # K线主图
             fig.add_trace(go.Candlestick(
                 x=df_kline['Date'],
                 open=df_kline['Open'],
@@ -319,17 +326,24 @@ elif nav_option == "🔍 个股全方位深度分析":
                 close=df_kline['Close'],
                 name='日K线',
                 increasing_line_color='red', decreasing_line_color='green'
-            ))
-            # 均线
-            fig.add_trace(go.Scatter(x=df_kline['Date'], y=df_kline['MA5'], mode='lines', name='MA5', line=dict(width=1)))
-            fig.add_trace(go.Scatter(x=df_kline['Date'], y=df_kline['MA20'], mode='lines', name='MA20', line=dict(width=1.5)))
-            fig.add_trace(go.Scatter(x=df_kline['Date'], y=df_kline['MA60'], mode='lines', name='MA60', line=dict(width=2)))
+            ), row=1, col=1)
             
+            # 均线
+            fig.add_trace(go.Scatter(x=df_kline['Date'], y=df_kline['MA5'], mode='lines', name='MA5', line=dict(width=1)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_kline['Date'], y=df_kline['MA20'], mode='lines', name='MA20', line=dict(width=1.5)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_kline['Date'], y=df_kline['MA60'], mode='lines', name='MA60', line=dict(width=2)), row=1, col=1)
+            
+            # 成交量副图
+            colors = ['red' if row['Close'] >= row['Open'] else 'green' for _, row in df_kline.iterrows()]
+            fig.add_trace(go.Bar(
+                x=df_kline['Date'], 
+                y=df_kline['Volume'], 
+                marker_color=colors, 
+                name='成交量'
+            ), row=2, col=1)
+
             fig.update_layout(
-                title=f"{quote['name']} ({quote['code']}) 历史K线趋势 (附均线)",
-                xaxis_title="日期",
-                yaxis_title="价格 (元)",
-                height=450,
+                height=520,
                 xaxis_rangeslider_visible=False,
                 margin=dict(l=20, r=20, t=40, b=20)
             )
@@ -359,7 +373,7 @@ elif nav_option == "🔍 个股全方位深度分析":
 请针对给定的股票实时数据，给出专业、深度、切中要害的研判说明，避免套话。"""
 
                 user_prompt = f"""
-f"请对股票【{quote['name']} ({quote['code']})】进行全方位研判。"
+请对股票【{quote['name']} ({quote['code']})}】进行全方位研判。
 
 【实时交易数据】：
 - 当前价: {quote['price']}元 | 涨跌幅: {quote['pct_change']:.2f}% | 昨收: {quote['prev_close']}元
@@ -448,13 +462,13 @@ elif nav_option == "💼 持仓管理与AI风控建议":
         
         st.subheader("📋 详细持仓清单")
         
-        # 表格颜色渲染
+        # 表格颜色渲染 (修正 applymap -> map)
         def style_pnl(val):
             color = 'red' if val > 0 else 'green' if val < 0 else 'black'
             return f'color: {color}; font-weight: bold;'
 
         st.dataframe(
-            df_port.style.applymap(style_pnl, subset=['盈亏金额(元)', '盈亏比例(%)', '日内涨跌幅(%)']),
+            df_port.style.map(style_pnl, subset=['盈亏金额(元)', '盈亏比例(%)', '日内涨跌幅(%)']),
             use_container_width=True
         )
         
@@ -518,4 +532,4 @@ elif nav_option == "💼 持仓管理与AI风控建议":
 # 8. 页脚说明
 # ==========================================
 st.markdown("---")
-st.caption("⚠️️ **免责声明**：本系统基于大语言模型与第三方公开数据 API（东方财富）提供分析服务，生成的所有内容仅供投资研究参考，不构成任何具体的买卖投资建议。股市有风险，入市需谨慎。")
+st.caption("⚠ **免责声明**：本系统基于大语言模型与第三方公开数据 API（东方财富）提供分析服务，生成的所有内容仅供投资研究参考，不构成任何具体的买卖投资建议。股市有风险，入市需谨慎。")
