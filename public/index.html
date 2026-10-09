@@ -11,7 +11,7 @@
 <section id="set" class="hide"><div class="card"><h2>AI 模型配置</h2><p class="muted">支持 OpenAI 兼容接口。Endpoint 可填写服务商根地址（如 https://api.deepseek.com），系统自动补全 /chat/completions。API Key 不会回传给浏览器；当前版本将其保存在项目 D1 数据库中，请使用专用、低权限、可撤销的密钥。</p><div class="row" style="margin:12px 0"><label style="width:130px">Endpoint</label><input id="aiEndpoint" style="flex:1;min-width:260px" placeholder="https://api.deepseek.com（系统自动补全 /chat/completions）"></div><div class="row" style="margin:12px 0"><label style="width:130px">Model ID</label><input id="aiModel" style="flex:1;min-width:260px" placeholder="例如 gpt-4.1-mini"></div><div class="row" style="margin:12px 0"><label style="width:130px">API Key</label><input id="aiKey" type="password" style="flex:1;min-width:260px" placeholder="已保存的密钥不会显示；输入新密钥以更新"></div><div class="row"><button class="primary" onclick="saveAI()">保存配置</button><button onclick="loadAI()">刷新配置状态</button><span id="aiStatus" class="muted"></span></div><div class="notice" style="margin-top:14px">当前 AI 分析以实时行情和日 K 线为基础。尚未接入可验证的新闻、公告、板块资金流数据时，AI 必须明确说明这些信息缺失，不会自动编造。</div></div></section>
 </main><script>
 const $=x=>document.querySelector(x);async function api(p,o){const r=await fetch(p,o);const raw=await r.text();let j;try{j=JSON.parse(raw)}catch{throw Error('服务器返回非JSON响应（HTTP '+r.status+'）'+(raw?'：'+raw.slice(0,180):''))}if(!r.ok)throw Error((j.error||'请求失败')+(j.stage?'；阶段：'+j.stage:'')+(j.elapsedMs?'；耗时：'+(j.elapsedMs/1000).toFixed(1)+'秒':''));return j}function normalizeNewlines(v){let s=String(v??'');s=s.replace(/\\+r\\+n/g,'\n').replace(/\\+n/g,'\n').replace(/\\+r/g,'\n').replace(/\r\n?/g,'\n');s=s.replace(/\\([#*_\`])/g,'$1');s=s.replace(/^\s{0,3}#{1,6}\s*/gm,'');s=s.replace(/\*\*(.*?)\*\*/g,'$1').replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1$2');s=s.replace(/^\s*[-*_]{3,}\s*$/gm,'');return s}function renderReportHTML(v){
- const raw=normalizeNewlines(v).replace(/\r/g,'');
+ const raw=String(v??'').replace(/\\+r\\+n/g,'\n').replace(/\\+n/g,'\n').replace(/\\+r/g,'\n').replace(/\r\n?/g,'\n').replace(/\\([#*_\x60])/g,'$1').replace(/\s{2,}(?=\d+[）.)、]\s*(?:交易结论|短线量化|行业|题材|资金流|财务与估值|官方公告|风险清单|数据来源|条件式交易))/g,'\n\n');
  const lines=raw.split('\n');
  const inline=(s)=>{
   let z=escapeHTML(s);
@@ -29,8 +29,8 @@ const $=x=>document.querySelector(x);async function api(p,o){const r=await fetch
   const t=line.trim();
   if(/^\|.*\|$/.test(t)){flushPara();flushList();table.push(t);continue}else flushTable();
   if(!t){flushPara();flushList();continue}
-  const hd=t.match(/^(#{1,4})\s+(.+)$/);
-  if(hd){flushPara();flushList();out.push('<h'+Math.min(4,hd[1].length)+'>'+inline(hd[2])+'</h'+Math.min(4,hd[1].length)+'>');continue}
+  const hd=t.match(/^(#{1,4})\s+(.+)$/)||t.match(/^(\d+[）.)、])\s*(交易结论与信号强度|短线量化因子面板|行业\/题材与催化|资金流|财务与估值|官方公告与新闻|条件式交易计划|风险清单|数据来源与逐项状态)(.*)$/);
+  if(hd){flushPara();flushList();const level=hd[1].startsWith('#')?Math.min(4,hd[1].length):2;const title=hd[1].startsWith('#')?hd[2]:hd[1]+' '+hd[2]+(hd[3]||'');out.push('<h'+level+'>'+inline(title)+'</h'+level+'>');continue}
   if(/^[-*_]{3,}$/.test(t)){flushPara();flushList();out.push('<hr>');continue}
   const li=t.match(/^(?:[-*+]\s+|\d+[.)、]\s+)(.*)$/);
   if(li){flushPara();list.push(li[1]);continue}
