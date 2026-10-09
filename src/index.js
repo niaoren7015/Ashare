@@ -36,7 +36,7 @@ async function quote(code){
   if(!a||a.length<38)throw Error('返回格式异常');
   const price=n(a[3]),prevClose=n(a[4]),open=n(a[5]);
   if(price==null||prevClose==null)throw Error('缺少有效价格字段');
-  return{source:'tencent-fallback',primaryError:errors.join('；'),fetchedAt:now(),latencyMs:Date.now()-started,code,name:a[1]||code,price,prevClose,open,high:n(a[33]),low:n(a[34]),volume:n(a[6]),amount:n(a[37]),turnoverRate:n(a[38]),pe:n(a[39]),pb:n(a[46]),totalMarketCap:n(a[45]),circulatingMarketCap:n(a[44])};
+  return{source:'tencent-fallback',primaryError:errors.join('；'),fetchedAt:now(),latencyMs:Date.now()-started,code,name:a[1]||code,price,prevClose,open,high:n(a[33]),low:n(a[34]),volume:n(a[36]),amount:n(a[37])==null?null:n(a[37])*10000,turnoverRate:n(a[38]),pe:n(a[39]),pb:n(a[46]),totalMarketCap:n(a[45])==null?null:n(a[45])*100000000,circulatingMarketCap:n(a[44])==null?null:n(a[44])*100000000};
  }catch(e){errors.push('腾讯行情: '+String(e?.message||e))}
  // Independent quote fallback; Sina's public endpoint returns a CSV string rather than JSON.
  try{
