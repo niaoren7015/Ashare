@@ -348,7 +348,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  if(!cfg.ai_endpoint||!cfg.ai_api_key||!cfg.ai_model)return json({error:'请先在设置中配置 AI Endpoint、API Key 和 Model'},400);
  const started=Date.now();
  try{
-  if(!/^\\d{6}$/.test(code))throw Error('股票代码应为6位数字');
+  if(!/^\d{6}$/.test(code))throw Error('股票代码应为6位数字');
   const [qResult,kResult,newsResult,financeResult,flowResult]=await Promise.all([
    quote(code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
    kline(code,120,'day').then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
