@@ -56,7 +56,7 @@ async function quote(code){
  }catch(e){errors.push('新浪行情: '+String(e?.message||e))}
  throw Error('行情数据源均不可用。'+errors.join('；'));
 }
-async async function fetchSinaKline(code,scale,count){
+async function fetchSinaKline(code,scale,count){
  const sym=/^(6|688|5|9)/.test(String(code))?'sh'+code:'sz'+code;
  const params={symbol:sym,scale:String(scale),ma:'no',datalen:String(Math.min(1023,Math.max(1,count)))};
  const urls=[
