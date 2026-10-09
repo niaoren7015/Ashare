@@ -331,7 +331,7 @@ function computeShortTermFactors(rows,quoteData,klineQuality){
  const distanceHighPct=last&&high20>0?Number(((last.close/high20-1)*100).toFixed(2)):null,distanceLowPct=last&&low20>0?Number(((last.close/low20-1)*100).toFixed(2)):null;
  const vol20=bars.slice(-20).filter(x=>Number.isFinite(x.volume)&&x.volume>0),vol5=bars.slice(-5).filter(x=>Number.isFinite(x.volume)&&x.volume>0);
  const volumeCoverage20Pct=recent20.length?Math.round(vol20.length/recent20.length*100):0,volumeRatio=vol20.length>=16&&vol5.length===5&&vol20.reduce((a,x)=>a+x.volume,0)>0?Number(((vol5.reduce((a,x)=>a+x.volume,0)/5)/(vol20.reduce((a,x)=>a+x.volume,0)/vol20.length)).toFixed(2)):null;
- const changes=recent15.slice(1).map((x,i)=>({gain:Math.max(0,x.close-recent14[i].close),loss:Math.max(0,recent14[i].close-x.close)}));
+ const changes=recent15.slice(1).map((x,i)=>({gain:Math.max(0,x.close-recent15[i].close),loss:Math.max(0,recent15[i].close-x.close)}));
  const gains=changes.reduce((a,x)=>a+x.gain,0),losses=changes.reduce((a,x)=>a+x.loss,0),rsi14=changes.length===14?Number((losses===0?100:100-100/(1+(gains/14)/(losses/14))).toFixed(1)):null;
  const tr=bars.slice(-14).map((x,i)=>{const prev=bars[bars.length-14+i-1]?.close;return Math.max(x.high-x.low,prev==null?0:Math.abs(x.high-prev),prev==null?0:Math.abs(x.low-prev))});
  const atr14=tr.length===14?tr.reduce((a,v)=>a+v,0)/14:null,atrPct=atr14&&last?Number((atr14/last.close*100).toFixed(2)):null;
