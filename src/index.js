@@ -260,7 +260,11 @@ async function fetchMarketNews(category='domestic'){
   fetchEastmoneyColumnNews(intl?'351':'350',30).then(rows=>({rows,error:null})).catch(e=>({rows:[],error:String(e?.message||e)}))
  ]);
  const seen=new Set(),rows=[];
- for(const z of results)for(const x of z.rows){const key=x.url||x.title;if(key&&!seen.has(key)){seen.add(key);rows.push({...x,category:intl?'国际财经':'国内/A股财经'})}}
+ for(const z of results)for(const x of z.rows){
+  const foreign=/\/usstock\/|\/global\/|\/world\//i.test(x.url)||/(美股|纳指|道指|标普|港股|日经指数|欧洲股市)/.test(x.title||'');
+  if(!intl&&foreign)continue;
+  const key=x.url||x.title;if(key&&!seen.has(key)){seen.add(key);rows.push({...x,category:intl?'国际财经':'国内/A股财经',relevance:intl?'国际市场背景':'A股/国内市场资讯；仍需逐条判断与个股的关联'})}
+ }
  if(!rows.length)throw Error('新闻源均未返回有效新闻：'+results.map(x=>x.error).filter(Boolean).join('；'));
  return{source:results.filter(x=>x.rows.length).map(x=>x.rows[0].source).join('+'),category:intl?'international':'domestic',fetchedAt:now(),rows:rows.slice(0,40),sourceChecks:results.map((x,i)=>({source:i?'eastmoney':'sina',validRows:x.rows.length,error:x.error}))};
 }
@@ -372,23 +376,26 @@ async function fetchFinancialSnapshot(code){
 }
 
 async function fetchSectorFlowRanks(type='industry'){
- const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
+ const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const fs=type==='concept'?'m:90+t:3+f:!50':'m:90+t:2+f:!50';
- for(const host of ['push2delay.eastmoney.com','push2.eastmoney.com']){
+ const hosts=type==='concept'?['79.push2.eastmoney.com','29.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com']:['17.push2.eastmoney.com','29.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com'];
+ for(const host of hosts){
   try{
    const u=new URL('https://'+host+'/api/qt/clist/get');
-   for(const [k,v] of Object.entries({pn:'1',pz:'80',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs,fields:'f12,f14,f2,f3,f6,f62,f184',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+   for(const [k,v] of Object.entries({pn:'1',pz:'50',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs,fields:'f12,f14,f2,f3,f6,f62,f184',ut:'fa5fd1943c7b386f172d6893dbfba10b',_ :String(Date.now())}))u.searchParams.set(k,v);
    const r=await fetch(u,{headers,signal:AbortSignal.timeout(3500),cache:'no-store'});if(!r.ok)throw Error(host+' HTTP '+r.status);
-   const body=await r.json(),diff=body?.data?.diff,arr=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
-   if(!arr.length)throw Error(host+' 返回空板块列表');
-   const rows=arr.map(x=>({code:String(x.f12||''),name:String(x.f14||''),changePct:x.f3==null?null:Number(x.f3),amount:x.f6==null?null:Number(x.f6),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),flowRatio:x.f184==null||x.f184===''?null:(Number.isFinite(Number(x.f184))?Number(x.f184):null),type,source:host})).filter(x=>x.code&&x.name);
+   const raw=(await r.text()).trim();if(!raw)throw Error(host+' 空响应');
+   let body;try{body=JSON.parse(raw)}catch{const m=raw.match(/^[^(]*\(([\s\S]*)\)\s*;?$/);if(!m)throw Error(host+' 返回非JSON/JSONP');body=JSON.parse(m[1])}
+   const diff=body?.data?.diff,arr=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
+   if(!arr.length)throw Error(host+' 返回空板块列表；rc='+(body?.rc??'未知'));
+   const rows=arr.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:x.f2==null?null:Number(x.f2),changePct:x.f3==null?null:Number(x.f3),amount:x.f6==null||x.f6===''?null:Number(x.f6),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),flowRatio:x.f184==null||x.f184===''?null:(Number.isFinite(Number(x.f184))?Number(x.f184):null),type,source:host,unit:'CNY'})).filter(x=>x.code&&x.name);
    if(!rows.length)throw Error(host+' 返回记录缺少板块代码/名称');
    const flowCount=rows.filter(x=>Number.isFinite(x.flow)).length;
-   if(flowCount===0)throw Error(host+' 返回板块名称但没有有效净流入字段 f62；不能作为资金流排行');
+   if(flowCount===0)throw Error(host+' 返回板块名称但没有有效净流入字段 f62');
    return rows;
   }catch(e){errors.push(String(e?.message||e))}
  }
- throw Error('板块资金流排行接口均不可用：'+errors.join('；'));
+ throw Error('板块资金流排行接口均未通过有效性校验：'+errors.join('；'));
 }
 
 async function fetchStockBoards(code){
