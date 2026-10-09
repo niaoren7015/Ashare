@@ -479,7 +479,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   }));
   const flowPositive=flowChecked.filter(c=>c.flowHistory?.latest?.mainNetInflow>0&&c.changePct<6&&(!Number.isFinite(c.pe)||c.pe>0))
    .sort((a,b)=>(b.flowHistory.cumulativeMainNetInflow||0)-(a.flowHistory.cumulativeMainNetInflow||0));
-  const chosen=(flowPositive.length>=3?flowPositive:flowChecked.filter(c=>c.flowHistory).length>=3?flowChecked.filter(c=>c.flowHistory).sort((a,b)=>(b.flowHistory?.cumulativeMainNetInflow||-Infinity)-(a.flowHistory?.cumulativeMainNetInflow||-Infinity):flowChecked.slice().sort((a,b)=>b.preScore-a.preScore)).slice(0,3);
+  const chosen=(flowPositive.length>=3?flowPositive:flowChecked.filter(c=>c.flowHistory).length>=3?flowChecked.filter(c=>c.flowHistory).sort((a,b)=>(b.flowHistory?.cumulativeMainNetInflow||-Infinity)-(a.flowHistory?.cumulativeMainNetInflow||-Infinity)):flowChecked.slice().sort((a,b)=>b.preScore-a.preScore)).slice(0,3);
   stage='读取最终候选股行情和日K线';
   // Fetch actual quote + daily bars for only the three finalists, avoiding the old high fan-out pattern.
   const results=await Promise.all(chosen.map(async c=>{
