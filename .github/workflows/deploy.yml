@@ -27,6 +27,16 @@ jobs:
           node-version: "22"
       - name: Install Wrangler
         run: npm install
+      - name: Validate frontend inline JavaScript syntax
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const html = fs.readFileSync('public/index.html', 'utf8');
+          const scripts = [...html.matchAll(/<script>([\\s\\S]*?)<\\/script>/g)];
+          if (!scripts.length) throw new Error('No inline script found in public/index.html');
+          for (const [i, match] of scripts.entries()) new Function(match[1]);
+          console.log('Frontend JavaScript syntax passed:', scripts.length, 'inline script(s)');
+          NODE
       - name: Deploy Worker and static assets
         run: npx wrangler deploy
         env:
