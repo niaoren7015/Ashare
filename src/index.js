@@ -399,10 +399,10 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  try{
   if(!/^\d{6}$/.test(code))throw Error('股票代码应为6位数字');
   const [qResult,kResult,financeResult,flowResult]=await Promise.all([
-   quote(code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
-   kline(code,120,'day').then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
-   fetchFinancialSnapshot(code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
-   fetchStockFlowHistory(code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
+   cachedData(db,'quote:'+code,10000,()=>quote(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
+   cachedData(db,'kline:'+code+':day:120',300000,()=>kline(code,120,'day')).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
+   cachedData(db,'financial:'+code,21600000,()=>fetchFinancialSnapshot(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
+   cachedData(db,'flow:'+code,60000,()=>fetchStockFlowHistory(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
   ]);
   if(!qResult.data)throw Error('实时行情不可用，不能安全生成个股分析：'+qResult.error);
   const q=qResult.data,k=kResult.data,rows=k?.rows||[],last=rows.at(-1);
@@ -454,10 +454,10 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  const started=Date.now();let stage='读取候选行情、指数和资讯';
  try{
   const [candidates,market,newsResult,liquidityResult]=await Promise.all([
-   fetchScreenCandidates(),
-   Promise.all(['000001','399001','399006'].map(async code=>{try{return await quoteIndex(code)}catch(e){return{code,error:String(e.message||e)}}})),
-   fetchSinaMarketNews().then(items=>({items,error:null})).catch(e=>({items:[],error:String(e.message||e)})),
-   fetchMarketLiquidity().catch(e=>({source:null,error:String(e.message||e)}))
+   cachedData(db,'screen-candidates',45000,async()=>({items:await fetchScreenCandidates()})).then(x=>x.items),
+   Promise.all(['000001','399001','399006'].map(async code=>{try{return await cachedData(db,'index:'+code,20000,()=>quoteIndex(code))}catch(e){return{code,error:String(e.message||e)}}})),
+   cachedData(db,'market-news',120000,async()=>({items:await fetchSinaMarketNews()})).then(x=>({items:x.items,error:null})).catch(e=>({items:[],error:String(e.message||e)})),
+   cachedData(db,'market-liquidity',20000,()=>fetchMarketLiquidity()).catch(e=>({source:null,error:String(e.message||e)}))
   ]);
   if(!candidates.length)throw Error('没有取得有效候选股行情，请稍后重试');
   stage='筛选候选股并核验近5日资金流';
@@ -474,7 +474,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    return {...c,preScore:Number(score.toFixed(2))};
   }).sort((a,b)=>b.preScore-a.preScore);
   const flowChecked=await Promise.all(ranked.slice(0,5).map(async c=>{
-   try{return {...c,flowHistory:await fetchStockFlowHistory(c.code),flowHistoryError:null}}
+   try{return {...c,flowHistory:await cachedData(db,'flow:'+c.code,60000,()=>fetchStockFlowHistory(c.code)),flowHistoryError:null}}
    catch(e){return {...c,flowHistory:null,flowHistoryError:String(e.message||e)}}
   }));
   const flowPositive=flowChecked.filter(c=>c.flowHistory?.latest?.mainNetInflow>0&&c.changePct<6&&(!Number.isFinite(c.pe)||c.pe>0))
@@ -484,9 +484,9 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   // Fetch actual quote + daily bars for only the three finalists, avoiding the old high fan-out pattern.
   const results=await Promise.all(chosen.map(async c=>{
    const [qResult,kResult,finResult]=await Promise.all([
-    quote(c.code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
-    kline(c.code,120,'day').then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
-    fetchFinancialSnapshot(c.code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
+    cachedData(db,'quote:'+c.code,10000,()=>quote(c.code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
+    cachedData(db,'kline:'+c.code+':day:120',300000,()=>kline(c.code,120,'day')).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
+    cachedData(db,'financial:'+c.code,21600000,()=>fetchFinancialSnapshot(c.code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
    ]);
    const q=qResult.data||{code:c.code,name:c.name,price:c.price,changePct:c.changePct,source:c.rankSource,pe:c.pe,turnoverRate:c.turnover,amount:c.amount};
    const k=kResult.data,rows=k?.rows||[],last=rows.at(-1);
@@ -502,8 +502,8 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   }));
   stage='读取候选股所属板块及板块资金流';
   const [sectorRanks,boardResults]=await Promise.all([
-   Promise.all(['industry','concept'].map(async type=>{try{return await fetchSectorFlowRanks(type)}catch(e){return {error:String(e.message||e),type,items:[]}}})),
-   Promise.all(chosen.map(async c=>{try{return {code:c.code,boards:await fetchStockBoards(c.code),error:null}}catch(e){return {code:c.code,boards:[],error:String(e.message||e)}}}))
+   Promise.all(['industry','concept'].map(async type=>{try{return (await cachedData(db,'sector-flow:'+type,45000,async()=>({items:await fetchSectorFlowRanks(type)}))).items}catch(e){return {error:String(e.message||e),type,items:[]}}})),
+   Promise.all(chosen.map(async c=>{try{return {code:c.code,boards:(await cachedData(db,'stock-boards:'+c.code,21600000,async()=>({items:await fetchStockBoards(c.code)}))).items,error:null}}catch(e){return {code:c.code,boards:[],error:String(e.message||e)}}}))
   ]);
   const sectorByCode=new Map(sectorRanks.flatMap(x=>Array.isArray(x)?x:[]).map(x=>[x.code,x]));
   for(const item of results){
@@ -520,7 +520,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const financeCount=good.filter(x=>x.analysis.dataQuality?.financialStatementsAvailable).length;
    const flowErrors=good.map(x=>x.analysis.flowHistoryError).filter(Boolean).slice(0,3).join(' | ');
    const financeErrors=good.map(x=>x.analysis.financialSnapshotError).filter(Boolean).slice(0,3).join(' | ');
-   if(indexCount<2||quoteCount<3||klineCount<2||flowCount<2||financeCount<2)throw Error('基础数据质量门槛未通过，暂不生成误导性报告。可用数据：指数 '+indexCount+'/3，个股实时行情 '+quoteCount+'/3，至少20日有效日K '+klineCount+'/3，个股资金流（历史或当日快照） '+flowCount+'/3，财务摘要 '+financeCount+'/3。资金流错误：'+(flowErrors||'无')+'。财务错误：'+(financeErrors||'无')+'。市场流动性源：'+(liquidityResult.error||liquidityResult.source||'未知')+'。');
+   if(indexCount<2||quoteCount<3||klineCount<2||financeCount<2)throw Error('基础行情/技术/财务数据质量门槛未通过，暂不生成误导性报告。可用数据：指数 '+indexCount+'/3，个股实时行情 '+quoteCount+'/3，至少20日有效日K '+klineCount+'/3，财务摘要 '+financeCount+'/3。资金流当前 '+flowCount+'/3（资金流不是报告生成的硬门槛，缺失时会明确标注未知）。资金流错误：'+(flowErrors||'无')+'。财务错误：'+(financeErrors||'无')+'。市场流动性源：'+(liquidityResult.error||liquidityResult.source||'未知')+'。');
   const payload={
    generatedAt:now(),elapsedMs:Date.now()-started,marketIndices:market,marketLiquidity:liquidityResult,
    marketNews:newsResult.items.slice(0,12),newsFetchError:newsResult.error,
