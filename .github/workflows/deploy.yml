@@ -44,3 +44,30 @@ jobs:
           node -e "const fs=require('fs');const x=JSON.parse(fs.readFileSync('/tmp/worker-health.json','utf8'));if(x.ok!==true||x.db!==true)process.exit(1);console.log('Worker health smoke test passed:',JSON.stringify({ok:x.ok,db:x.db,version:x.version,time:x.time}))"
         env:
           WORKER_URL: https://a-share-ai-tracker.parker-f21.workers.dev
+      - name: Production data-source smoke tests (informational)
+        continue-on-error: true
+        run: |
+          node <<'NODE'
+          const base = process.env.WORKER_URL;
+          const tests = [
+            ['Tencent quote', '/api/quote?code=600519', x => x.price > 0, x => ({source:x.source, code:x.code, name:x.name, price:x.price, fetchedAt:x.fetchedAt})],
+            ['Daily K-line', '/api/kline?code=600519&limit=20&mode=day', x => Array.isArray(x.rows) && x.rows.length >= 20 && x.rows.every(r => Number.isFinite(Number(r.close)) && Number(r.close) > 0), x => ({source:x.source, rows:x.rows?.length, latest:x.rows?.at(-1)?.date, quality:x.quality, warning:x.warning || null, primaryError:x.primaryError || null})],
+            ['Intraday 5-minute K-line', '/api/kline?code=600519&mode=intraday', x => Array.isArray(x.rows) && x.rows.length > 0 && x.rows.every(r => Number.isFinite(Number(r.close)) && Number(r.close) > 0), x => ({source:x.source, rows:x.rows?.length, latest:x.rows?.at(-1)?.date, quality:x.quality, warning:x.warning || null, primaryError:x.primaryError || null})],
+            ['Stock announcements', '/api/announcements?code=600519', x => x.ok === true && Array.isArray(x.rows) && x.rows.length > 0, x => ({source:x.source, rows:x.rows?.length, sample:x.rows?.slice(0,2).map(r=>({title:r.title,date:r.date,source:r.source})), warning:x.warning || null, primaryError:x.primaryError || null, error:x.error || null})],
+          ];
+          (async () => {
+            for (const [name, path, valid, summary] of tests) {
+              try {
+                const r = await fetch(base + path, { signal: AbortSignal.timeout(15000), headers: {'cache-control':'no-cache'} });
+                const raw = await r.text();
+                let x; try { x = JSON.parse(raw); } catch { throw new Error('HTTP '+r.status+' non-JSON: '+raw.slice(0,160)); }
+                const ok = r.ok && valid(x);
+                console.log((ok ? 'PASS ' : 'CHECK ') + name + ': ' + JSON.stringify({httpStatus:r.status, ...summary(x)}));
+              } catch (e) {
+                console.log('CHECK ' + name + ': ' + String(e?.message || e));
+              }
+            }
+          })().catch(e => { console.log('CHECK production data tests: '+String(e?.message||e)); });
+          NODE
+        env:
+          WORKER_URL: https://a-share-ai-tracker.parker-f21.workers.dev
