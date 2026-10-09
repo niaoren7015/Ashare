@@ -98,7 +98,6 @@ async function kline(code,limit=120,mode='day'){
  const quality=rows=>{const n=rows.length||1;return{rowCount:rows.length,amountCoveragePct:Math.round(rows.filter(x=>x.amount!=null).length/n*100),changePctCoveragePct:Math.round(rows.filter(x=>x.changePct!=null).length/n*100),turnoverCoveragePct:Math.round(rows.filter(x=>x.turnover!=null).length/n*100)}};
  const started=Date.now(), errors=[];
  if(intraday){
- if(intraday){
   // Sina is the configured 5-minute source; use it first, then fall back to Eastmoney/Tencent.
   try{const rows=await fetchSinaKline(code,5,240);return{source:'sina-intraday-5m',mode:'intraday',interval:'5m',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:'unknown',warning:'新浪5分钟K线；接口未提供换手率字段，不据此推断资金流。'}}catch(e){errors.push('新浪5分钟K线: '+String(e?.message||e))}
   // Eastmoney is the first fallback.
