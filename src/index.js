@@ -98,7 +98,10 @@ async function kline(code,limit=120,mode='day'){
  const quality=rows=>{const n=rows.length||1;return{rowCount:rows.length,amountCoveragePct:Math.round(rows.filter(x=>x.amount!=null).length/n*100),changePctCoveragePct:Math.round(rows.filter(x=>x.changePct!=null).length/n*100),turnoverCoveragePct:Math.round(rows.filter(x=>x.turnover!=null).length/n*100)}};
  const started=Date.now(), errors=[];
  if(intraday){
-  // Try Eastmoney's historical 5-minute bars first; Sina is an independent fallback.
+ if(intraday){
+  // Sina is the configured 5-minute source; use it first, then fall back to Eastmoney/Tencent.
+  try{const rows=await fetchSinaKline(code,5,240);return{source:'sina-intraday-5m',mode:'intraday',interval:'5m',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:'unknown',warning:'新浪5分钟K线；接口未提供换手率字段，不据此推断资金流。'}}catch(e){errors.push('新浪5分钟K线: '+String(e?.message||e))}
+  // Eastmoney is the first fallback.
   try{
    const u=new URL('https://push2his.eastmoney.com/api/qt/stock/kline/get');
    u.searchParams.set('secid',secid(code));u.searchParams.set('fields1','f1,f2,f3,f4,f5,f6');u.searchParams.set('fields2','f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61');u.searchParams.set('klt','5');u.searchParams.set('fqt','0');u.searchParams.set('end','20500101');u.searchParams.set('lmt','240');u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');u.searchParams.set('_',String(Date.now()));
@@ -122,7 +125,6 @@ async function kline(code,limit=120,mode='day'){
    if(!rows.length)throw Error('腾讯5分钟K线没有有效数据');
    return{source:'tencent-intraday-5m',mode:'intraday',interval:'5m',fetchedAt:now(),latencyMs:Date.now()-started,rows:rows.slice(-240),quality:quality(rows),adjustment:'unknown',warning:'东方财富5分钟K线不可用，已切换腾讯5分钟数据；部分成交额字段可能缺失。',primaryError:errors.join('；')};
   }catch(e){errors.push('腾讯5分钟K线: '+String(e?.message||e))}
-  try{const rows=await fetchSinaKline(code,5,240);return{source:'sina-intraday-5m',mode:'intraday',interval:'5m',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:'unknown',warning:'东方财富与腾讯5分钟K线不可用，已切换新浪财经5分钟数据；盘中行情可能存在延迟。',primaryError:errors.join('；')}}catch(e){errors.push('新浪5分钟K线: '+String(e?.message||e))}
   throw Error('分时K线暂不可用：'+errors.join('；'));
 }
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
@@ -145,20 +147,7 @@ async function kline(code,limit=120,mode='day'){
   if(!rows.length)throw Error('Eastmoney returned no valid K-line rows');
   return{source:'eastmoney-kline',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:'none'};
  }catch(e){errors.push('东方财富: '+String(e?.message||e))}
- // Keep the original Tencent parameter shape as a fallback; do not assume the qfqday field always exists.
- try{
-  const sym=/^(6|688|5|9)/.test(code)?'sh'+code:'sz'+code;
-  const u=new URL('https://web.ifzq.gtimg.cn/appstock/app/fqkline/get');
-  u.searchParams.set('param',sym+',day,,,'+count+',');
-  u.searchParams.set('_',String(Date.now()));
-  const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://gu.qq.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(5000)});
-  if(!r.ok)throw Error('Tencent HTTP '+r.status);
-  const body=await r.json(),node=body?.data?.[sym];
-  const arr=node?.day||node?.qfqday||node?.hfqday||[];
-  const rows=withDerivedChanges(arr.map(p=>({date:p[0],open:safeNum(p[1]),close:safeNum(p[2]),high:safeNum(p[3]),low:safeNum(p[4]),volume:safeNum(p[5]),amount:safeNum(p[6]),changePct:null,turnover:safeNum(p[7])})).filter(x=>x.date&&x.close!=null));
-  if(!rows.length)throw Error('Tencent returned no valid K-line rows');
-  return{source:'tencent-kline-fallback',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:node?.qfqday?'qfq':'none',warning:'东方财富 K 线暂不可用，已切换腾讯备用源；腾讯未提供的字段保持为空。',primaryError:errors.join('；')};
- }catch(e){errors.push('腾讯: '+String(e?.message||e))}
+ // Sina is the second source because it provides daily OHLCV reliably in the reference implementation.
  // Independent third source for resilience if Eastmoney and Tencent fail.
  try{
   const sym=/^(6|688|5|9)/.test(code)?'sh'+code:'sz'+code;
@@ -175,6 +164,22 @@ async function kline(code,limit=120,mode='day'){
   if(!rows.length)throw Error('Sina returned no valid K-line rows');
   return{source:'sina-kline-fallback',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:'unknown',warning:'东方财富与腾讯 K 线暂不可用，已切换新浪备用源；复权方式及未提供字段可能不同。',primaryError:errors.join('；')};
  }catch(e){errors.push('新浪: '+String(e?.message||e))}
+
+ // Tencent is the final fallback; fields absent from the response remain null.
+ // Keep the original Tencent parameter shape as a fallback; do not assume the qfqday field always exists.
+ try{
+  const sym=/^(6|688|5|9)/.test(code)?'sh'+code:'sz'+code;
+  const u=new URL('https://web.ifzq.gtimg.cn/appstock/app/fqkline/get');
+  u.searchParams.set('param',sym+',day,,,'+count+',');
+  u.searchParams.set('_',String(Date.now()));
+  const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://gu.qq.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(5000)});
+  if(!r.ok)throw Error('Tencent HTTP '+r.status);
+  const body=await r.json(),node=body?.data?.[sym];
+  const arr=node?.day||node?.qfqday||node?.hfqday||[];
+  const rows=withDerivedChanges(arr.map(p=>({date:p[0],open:safeNum(p[1]),close:safeNum(p[2]),high:safeNum(p[3]),low:safeNum(p[4]),volume:safeNum(p[5]),amount:safeNum(p[6]),changePct:null,turnover:safeNum(p[7])})).filter(x=>x.date&&x.close!=null));
+  if(!rows.length)throw Error('Tencent returned no valid K-line rows');
+  return{source:'tencent-kline-fallback',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:node?.qfqday?'qfq':'none',warning:'东方财富 K 线暂不可用，已切换腾讯备用源；腾讯未提供的字段保持为空。',primaryError:errors.join('；')};
+ }catch(e){errors.push('腾讯: '+String(e?.message||e))}
  throw Error('K线数据源均不可用。'+errors.join('；'));
 }
 async function health(db,source,status,detail,latency){if(db)await db.prepare('INSERT INTO data_health(source,status,latency_ms,checked_at,detail) VALUES(?,?,?,?,?) ON CONFLICT(source) DO UPDATE SET status=excluded.status,latency_ms=excluded.latency_ms,checked_at=excluded.checked_at,detail=excluded.detail').bind(source,status,latency||null,now(),detail||'').run()}
