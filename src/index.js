@@ -454,12 +454,14 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  if(!cfg.ai_endpoint||!cfg.ai_api_key||!cfg.ai_model)return json({error:'请先在设置中配置 AI Endpoint、API Key 和 Model'},400);
  const started=Date.now();let stage='读取候选行情、指数和资讯';
  try{
-  const [candidates,market,newsResult,liquidityResult]=await Promise.all([
+  const [candidates,market,liquidityResult]=await Promise.all([
    cachedData(db,'screen-candidates',45000,async()=>({items:await fetchScreenCandidates()})).then(x=>x.items),
    Promise.all(['000001','399001','399006'].map(async code=>{try{return await cachedData(db,'index:'+code,20000,()=>quoteIndex(code))}catch(e){return{code,error:String(e.message||e)}}})),
-   cachedData(db,'market-news',120000,async()=>({items:await fetchSinaMarketNews()})).then(x=>({items:x.items,error:null})).catch(e=>({items:[],error:String(e.message||e)})),
    cachedData(db,'market-liquidity',20000,()=>fetchMarketLiquidity()).catch(e=>({source:null,error:String(e.message||e)}))
   ]);
+  // The current Sina feed contains US equities and generic global finance stories.
+  // Do not spend a Worker subrequest or present it as A-share catalysts until relevance is validated.
+  const newsResult={items:[],error:'新浪通用资讯流含美股/泛财经内容，尚未通过A股市场相关性验收，本轮未作为选股催化输入'};
   if(!candidates.length)throw Error('没有取得有效候选股行情，请稍后重试');
   stage='筛选候选股'+(candidates.some(c=>Number.isFinite(c.flow))?'并核验可用资金流':'（当前候选榜仅含成交额，不发起无效资金流请求）');
   // First rank by observable liquidity, net flow, valuation availability and overheating risk.
@@ -506,16 +508,11 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const analysis={quote:q,klineSource:k?.source||null,klineFetchedAt:k?.fetchedAt||null,klineError:kResult.error,indicators:{ma5,ma20,ma60,trend,return5dPct:ret(5),return20dPct:ret(20),low20,high20,drawdown20dPct:peakDrawdown},fundFlowHistory:c.flowHistory||null,flowHistoryError:c.flowHistoryError||null,flowSnapshot:Number.isFinite(c.flow)?{date:null,retrievedAt:now(),mainNetInflow:c.flow,unit:'CNY',period:'ranking-snapshot-date-unverified',source:c.rankSource}:null,financialSnapshot:finResult.data,financialSnapshotError:finResult.error,dataQuality:{flowKnown:(!!c.flowHistory?.latest&&Number.isFinite(c.flowHistory.latest.mainNetInflow))||Number.isFinite(c.flow),flowSource:c.flowHistory?.source||c.rankSource,flowPeriod:c.flowHistory?.period||(Number.isFinite(c.flow)?'current-day-ranking-snapshot':null),flowHistoryDays:c.flowHistory?.historyDays||0,financialStatementsAvailable:!!finResult.data?.rows?.length,sectorFlowMatched:false},conclusion:{signal:trend==='偏强'?'观察回踩/放量确认':trend==='偏弱'?'等待止跌和趋势修复':'等待支撑确认',risk:[...(c.flow==null?['个股主力资金流缺失或数据源不支持']:[]),...(qResult.error?['独立实时行情获取失败，采用资金流榜快照']:[]),...(kResult.error?['日K线获取失败，无法可靠计算支撑位']:[])]}};
    return {...c,ok:true,analysis};
   }));
-  stage='读取候选股所属板块及板块资金流';
-  const [sectorRanks,boardResults]=await Promise.all([
-   Promise.all(['industry','concept'].map(async type=>{try{return (await cachedData(db,'sector-flow:'+type,45000,async()=>({items:await fetchSectorFlowRanks(type)}))).items}catch(e){return {error:String(e.message||e),type,items:[]}}})),
-   Promise.all(chosen.map(async c=>{try{return {code:c.code,boards:(await cachedData(db,'stock-boards:'+c.code,21600000,async()=>({items:await fetchStockBoards(c.code)}))).items,error:null}}catch(e){return {code:c.code,boards:[],error:String(e.message||e)}}}))
-  ]);
-  const sectorByCode=new Map(sectorRanks.flatMap(x=>Array.isArray(x)?x:[]).map(x=>[x.code,x]));
+  stage='整理板块字段（避免重复请求当前已失效的数据源）';
+  // Dedicated /api/data-diagnostics remains the place to probe sector-flow endpoints.
+  // Do not retry multiple known-failing endpoints for every finalist in one AI-screen invocation.
   for(const item of results){
-   const boardData=boardResults.find(x=>x.code===item.code);
-   const boards=boardData?.boards||[];
-   item.sectorContext={boards:boards.map(b=>({...b,flowRank:sectorByCode.get(b.code)?.flow??null,flowRatio:sectorByCode.get(b.code)?.flowRatio??null,sectorChangePct:sectorByCode.get(b.code)?.changePct??b.changePct??null,flowSource:sectorByCode.has(b.code)?'eastmoney-sector-flow-ranking':'membership-only'})),membershipError:boardData?.error||null,sectorFlowUnavailable:sectorRanks.some(x=>!Array.isArray(x))};
+   item.sectorContext={boards:[],membershipError:'板块归属接口在最近诊断中未通过验收；本轮为控制Worker子请求数而跳过重复探测',sectorFlowUnavailable:true,sectorFlowError:'行业/概念资金流源当前不可用，未将缺失值视为零'};
   }
   const good=results.filter(x=>x.ok);
   if(!good.length)throw Error('三只候选股均未能完成基础数据核验');
@@ -530,7 +527,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   const payload={
    generatedAt:now(),elapsedMs:Date.now()-started,marketIndices:market,marketLiquidity:liquidityResult,
    marketNews:newsResult.items.slice(0,12),newsFetchError:newsResult.error,
-   selectionMethod:'资金流优先 + 估值字段可用性 + 涨幅不过热 + 换手率/成交额 + 日K趋势/回撤复核',
+   selectionMethod:candidates.some(c=>Number.isFinite(c.flow))?'资金流字段可用时优先核验 + 估值字段可用性 + 涨幅不过热 + 日K趋势/回撤复核':'当前仅能按成交额/涨幅/可用估值字段及日K趋势/回撤筛选；资金流、板块归属与市场催化均未验证，不属于资金流选股',
    candidates:good.map(x=>({
     stock:{code:x.code,name:x.name,price:x.analysis.quote.price,changePct:x.changePct,amount:x.amount,turnover:x.turnover,pe:x.analysis.quote.pe??x.pe,pb:x.analysis.quote.pb??null,flow:x.flow,flowSource:x.analysis.fundFlowHistory?.source||x.rankSource,flowHistory:x.analysis.fundFlowHistory,flowHistoryError:x.analysis.flowHistoryError,flowPeriod:x.analysis.fundFlowHistory?.period||null,financialSnapshot:x.analysis.financialSnapshot||null,financialSnapshotError:x.analysis.financialSnapshotError||null,preScore:x.preScore},
     technical:x.analysis.indicators,klineSource:x.analysis.klineSource,klineError:x.analysis.klineError,
@@ -539,7 +536,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    limitations:[
     '已新增东方财富财务摘要接口，尝试读取最近5期报告的营收、净利润、ROE、每股经营现金流及资产负债率；若该接口不可用，相关指标必须标记缺失，不能推断为正常。完整财报附注与历史估值分位仍需另行核验。',
     '已尝试抓取候选股所属行业/概念板块和板块当日资金流排名；如果接口失败或未匹配到板块，必须标记缺失。当前板块流向为当日快照，尚不能证明资金连续多日增加。',
-    '新闻为市场资讯流；仅可将标题/摘要明确相关的内容作为线索，不能声称已完成公告原文核验。',
+    '当前未将新浪通用资讯流纳入选股输入，因为其中存在美股/泛财经内容；需后续接入并验收A股市场新闻/公告检索源。',
     '若候选股资金流字段为空或来自新浪涨幅榜，必须标记未知，不得推断为净流入。'
    ]
   };
