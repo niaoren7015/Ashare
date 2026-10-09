@@ -277,7 +277,7 @@ async function fetchStockFlowHistory(code){
  for(const host of hosts){
   try{
    const u=new URL('https://'+host+'/api/qt/stock/fflow/kline/get');
-   for(const [k,v] of Object.entries({secid:secid(code),fields1:'f1,f2,f3,f7',fields2:'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',klt:'101',lmt:'5',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+   for(const [k,v] of Object.entries({secid:secid(code),fields1:'f1,f2,f3,f7',fields2:'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',klt:'101',lmt:'5',end:'20500101',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
    const r=await fetch(u,{headers,signal:AbortSignal.timeout(3200),cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
    const parsed=parseHistory(await r.json());return{...parsed,host};
   }catch(e){errors.push(host+': '+String(e?.message||e))}
