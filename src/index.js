@@ -369,7 +369,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   fetchFinancialSnapshot('000001').then(x=>({ok:true,...x})).catch(e=>({ok:false,error:String(e.message||e)})),
   quoteCrossCheck('600519'),
   quoteCrossCheck('000001'),
-  kline('600519',20,'day').then(x=>({ok:true,source:x.source,rowCount:x.rows.length,asOfDate:x.rows.at(-1)?.date,quality:x.quality,sample:x.rows.slice(-2)})).catch(e=>({ok:false,error:String(e.message||e)})),
+  kline('600519',20,'day').then(x=>({ok:x.rows.length>=20,source:x.source,rowCount:x.rows.length,asOfDate:x.rows.at(-1)?.date,quality:x.quality,sample:x.rows.slice(-2),error:x.rows.length>=20?null:'有效日K少于20根'})).catch(e=>({ok:false,error:String(e.message||e)})),
   fetchSinaMarketNews().then(x=>({ok:true,count:x.length,sample:x.slice(0,3).map(y=>({title:y.title,publishedAt:y.publishedAt,url:y.url}))})).catch(e=>({ok:false,error:String(e.message||e)})),
   fetchCninfoAnnouncements('600519').then(x=>({ok:true,source:x.source,count:x.rows.length,sample:x.rows.slice(0,3)})).catch(e=>({ok:false,error:String(e.message||e)}))
  ]);
