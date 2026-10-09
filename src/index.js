@@ -11,7 +11,46 @@ const SCHEMA=[
 const now=()=>new Date().toISOString(), json=(d,s=200)=>new Response(JSON.stringify(d),{status:s,headers:{'content-type':'application/json;charset=utf-8','cache-control':'no-store'}});
 const secid=c=>/^(6|688|900)/.test(String(c))?'1.'+c:'0.'+c;
 let schemaReady=false;async function init(db){if(db&&!schemaReady){for(const s of SCHEMA)await db.prepare(s).run();schemaReady=true}}
-async function quote(code){code=String(code||'').trim();if(!/^\d{6}$/.test(code))throw Error('股票代码应为6位数字');const fields='f43,f44,f45,f46,f47,f48,f57,f58,f60,f116,f117,f162,f167,f168';const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};const urls=['https://push2.eastmoney.com/api/qt/stock/get','https://push2delay.eastmoney.com/api/qt/stock/get'];const t=Date.now();let lastErr='';for(const host of urls){try{const u=new URL(host);u.searchParams.set('secid',secid(code));u.searchParams.set('fields',fields);u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');u.searchParams.set('_',String(Date.now()));const r=await fetch(u,{headers,signal:AbortSignal.timeout(3000),cf:{cacheTtl:0,cacheEverything:false}});if(!r.ok){lastErr=host+' HTTP '+r.status;continue}const body=await r.json();const d=body?.data;if(!d){lastErr=host+' empty data';continue}const n=(v,div=1)=>(v==null||v==='-')?null:Number(v)/div;return{source:host.includes('delay')?'eastmoney-delay':'eastmoney',fetchedAt:now(),latencyMs:Date.now()-t,code:d.f57||code,name:d.f58||'',price:n(d.f43,100),open:n(d.f46,100),high:n(d.f44,100),low:n(d.f45,100),prevClose:n(d.f60,100),volume:n(d.f47),amount:n(d.f48),turnoverRate:n(d.f168,100),pe:n(d.f162,100),pb:n(d.f167,100),totalMarketCap:n(d.f116),circulatingMarketCap:n(d.f117)}}catch(e){lastErr=host+' '+e.message}}const sym=/^(6|688|5|9)/.test(code)?'sh'+code:'sz'+code;try{const u=new URL('https://web.ifzq.gtimg.cn/appstock/app/fqkline/get');u.searchParams.set('param',sym+',day,,,1,qfq');u.searchParams.set('_',String(Date.now()));const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://gu.qq.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(3000)});if(r.ok){const d=await r.json();const a=d?.data?.[sym]?.qt?.[sym]||d?.data?.[sym]?.qt; if(Array.isArray(a)&&a.length>46){const n=(v)=>(v==null||v==='-'||v==='')?null:Number(v);return{source:'tencent-fallback',primaryError:lastErr,fetchedAt:now(),latencyMs:Date.now()-t,code:a[2]||code,name:a[1]||'',price:n(a[3]),open:n(a[5]),high:n(a[33]),low:n(a[34]),prevClose:n(a[4]),volume:n(a[36]),amount:n(a[37])*10000,turnoverRate:n(a[38]),pe:n(a[39]),pb:n(a[46]),totalMarketCap:n(a[45])*100000000,circulatingMarketCap:n(a[44])*100000000}}}}catch(e){lastErr+='; Tencent '+e.message}throw Error(lastErr||'Market data providers unavailable')}
+async function quote(code){
+ code=String(code||'').trim();
+ if(!/^\d{6}$/.test(code))throw Error('股票代码应为6位数字');
+ const fields='f43,f44,f45,f46,f47,f48,f57,f58,f60,f116,f117,f162,f167,f168';
+ const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
+ const started=Date.now(),errors=[];
+ const n=(v,div=1)=>(v==null||v===''||v==='-')?null:(Number.isFinite(Number(v))?Number(v)/div:null);
+ for(const host of ['https://push2.eastmoney.com/api/qt/stock/get','https://push2delay.eastmoney.com/api/qt/stock/get']){
+  try{
+   const u=new URL(host);u.searchParams.set('secid',secid(code));u.searchParams.set('fields',fields);u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');u.searchParams.set('_',String(Date.now()));
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(host.includes('delay')?1800:2500),cache:'no-store'});
+   if(!r.ok)throw Error('HTTP '+r.status);
+   const d=(await r.json())?.data;if(!d)throw Error('返回为空');
+   return{source:host.includes('delay')?'eastmoney-delay':'eastmoney',fetchedAt:now(),latencyMs:Date.now()-started,code:d.f57||code,name:d.f58||'',price:n(d.f43,100),open:n(d.f46,100),high:n(d.f44,100),low:n(d.f45,100),prevClose:n(d.f60,100),volume:n(d.f47),amount:n(d.f48),turnoverRate:n(d.f168,100),pe:n(d.f162,100),pb:n(d.f167,100),totalMarketCap:n(d.f116),circulatingMarketCap:n(d.f117)};
+  }catch(e){errors.push((host.includes('delay')?'东方财富延迟行情':'东方财富行情')+': '+String(e?.message||e))}
+ }
+ // Tencent's fqkline endpoint returns historical candles, not a qt quote object. Use its dedicated quote endpoint here.
+ try{
+  const sym=/^(6|688|5|9)/.test(code)?'sh'+code:'sz'+code;
+  const r=await fetch('https://qt.gtimg.cn/q='+sym,{headers:{'user-agent':'Mozilla/5.0','referer':'https://gu.qq.com/','accept':'text/plain,*/*'},signal:AbortSignal.timeout(3500),cache:'no-store'});
+  if(!r.ok)throw Error('HTTP '+r.status);
+  const raw=await r.text(),m=raw.match(/="([^"]*)"/),a=m?.[1]?.split('~');
+  if(!a||a.length<38)throw Error('返回格式异常');
+  const price=n(a[3]),prevClose=n(a[4]),open=n(a[5]);
+  if(price==null||prevClose==null)throw Error('缺少有效价格字段');
+  return{source:'tencent-fallback',primaryError:errors.join('；'),fetchedAt:now(),latencyMs:Date.now()-started,code,name:a[1]||code,price,prevClose,open,high:n(a[33]),low:n(a[34]),volume:n(a[6]),amount:n(a[37]),turnoverRate:n(a[38]),pe:n(a[39]),pb:n(a[46]),totalMarketCap:n(a[45]),circulatingMarketCap:n(a[44])};
+ }catch(e){errors.push('腾讯行情: '+String(e?.message||e))}
+ // Independent quote fallback; Sina's public endpoint returns a CSV string rather than JSON.
+ try{
+  const sym=/^(6|688|5|9)/.test(code)?'sh'+code:'sz'+code;
+  const r=await fetch('https://hq.sinajs.cn/list='+sym,{headers:{'user-agent':'Mozilla/5.0 (compatible; AShareTracker/1.0)','referer':'https://finance.sina.com.cn/','accept':'text/plain,*/*'},signal:AbortSignal.timeout(3500),cache:'no-store'});
+  if(!r.ok)throw Error('HTTP '+r.status);
+  const raw=await r.text(),m=raw.match(/="([^"]*)"/),a=m?.[1]?.split(',');
+  if(!a||a.length<6||!a[0])throw Error('返回为空或格式异常');
+  const price=n(a[3]),prevClose=n(a[2]);
+  if(price==null||prevClose==null)throw Error('缺少有效价格字段');
+  return{source:'sina-fallback',primaryError:errors.join('；'),fetchedAt:now(),latencyMs:Date.now()-started,code,name:a[0]||code,price,open:n(a[1]),high:n(a[4]),low:n(a[5]),prevClose,volume:n(a[8]),amount:n(a[9]),turnoverRate:null,pe:null,pb:null,totalMarketCap:null,circulatingMarketCap:null};
+ }catch(e){errors.push('新浪行情: '+String(e?.message||e))}
+ throw Error('行情数据源均不可用。'+errors.join('；'));
+}
 async function kline(code,limit=120){
  code=String(code||'').trim();
  if(!/^\d{6}$/.test(code)) throw Error('股票代码应为6位数字');
