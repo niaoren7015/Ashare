@@ -17,14 +17,15 @@ async function cachedData(db,key,ttlMs,producer){
  let cached=null;
  try{const row=await db.prepare('SELECT payload,expires_at,updated_at FROM data_cache WHERE cache_key=?').bind(key).first();if(row){try{cached={data:JSON.parse(row.payload),expiresAt:Number(row.expires_at)||0,updatedAt:row.updated_at}}catch{cached=null}}}catch{}
  if(cached&&cached.expiresAt>Date.now())return {...cached.data,cache:{status:'hit',updatedAt:cached.updatedAt,expiresAt:new Date(cached.expiresAt).toISOString()}};
- try{
-  const data=await producer(),updatedAt=now(),expiresAt=Date.now()+ttlMs;
-  await db.prepare('INSERT INTO data_cache(cache_key,payload,updated_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at,expires_at=excluded.expires_at').bind(key,JSON.stringify(data),updatedAt,expiresAt).run();
-  return {...data,cache:{status:'miss',updatedAt,expiresAt:new Date(expiresAt).toISOString()}};
- }catch(e){
+ let data;
+ try{data=await producer()}catch(e){
   if(cached?.data)return {...cached.data,cache:{status:'stale-fallback',updatedAt:cached.updatedAt,expiresAt:new Date(cached.expiresAt).toISOString(),warning:String(e?.message||e)}};
   throw e;
  }
+ const updatedAt=now(),expiresAt=Date.now()+ttlMs;
+ try{await db.prepare('INSERT INTO data_cache(cache_key,payload,updated_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at,expires_at=excluded.expires_at').bind(key,JSON.stringify(data),updatedAt,expiresAt).run()}
+ catch(e){return {...data,cache:{status:'bypass',updatedAt,warning:'缓存写入失败：'+String(e?.message||e)}}}
+ return {...data,cache:{status:'miss',updatedAt,expiresAt:new Date(expiresAt).toISOString()}};
 }
 async function quote(code){
  code=String(code||'').trim();if(!/^\d{6}$/.test(code))throw Error('股票代码应为6位数字');
