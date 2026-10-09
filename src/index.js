@@ -261,7 +261,7 @@ async function fetchMarketNews(category='domestic'){
  ]);
  const seen=new Set(),rows=[];
  for(const z of results)for(const x of z.rows){
-  const foreign=/\/usstock\/|\/global\/|\/world\//i.test(x.url)||/(美股|纳指|道指|标普|港股|日经指数|欧洲股市)/.test(x.title||'');
+  const foreign=/\/(usstock|hkstock|global|world)\//i.test(x.url)||/(美股|纳指|道指|标普|港股|日经指数|欧洲股市)/.test(x.title||'');
   if(!intl&&foreign)continue;
   const key=x.url||x.title;if(key&&!seen.has(key)){seen.add(key);rows.push({...x,category:intl?'国际财经':'国内/A股财经',relevance:intl?'国际市场背景':'A股/国内市场资讯；仍需逐条判断与个股的关联'})}
  }
