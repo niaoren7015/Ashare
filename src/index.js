@@ -186,52 +186,99 @@ async function fetchSinaMarketNews(){
 }
 async function fetchScreenCandidates(){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
- try{
-  const u=new URL('https://push2.eastmoney.com/api/qt/clist/get');
-  for(const [k,v] of Object.entries({pn:'1',pz:'100',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs:'m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23',fields:'f12,f14,f2,f3,f5,f6,f7,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23,f62,f115'}))u.searchParams.set(k,v);
-  const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
-  const body=await r.json(),diff=body?.data?.diff;const list=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);if(!list.length)throw Error('返回空列表');
-  const rows=list.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:Number(x.f2),changePct:Number(x.f3),amount:Number(x.f6),turnover:Number(x.f8),pe:Number(x.f9),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),marketCap:Number(x.f20),rankSource:'eastmoney-money-flow'})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!x.name.includes('ST')&&x.price>0);
-  if(!rows.length)throw Error('返回数据无有效股票');return rows.slice(0,30);
- }catch(e){
-  const primary=String(e?.message||e);
-  // Independent fallback: Sina market center top-gainers list. It has no reliable capital-flow field, so flow remains null instead of being fabricated.
-  const u=new URL('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData');
-  for(const [k,v] of Object.entries({page:'1',num:'100',sort:'changepercent',asc:'0',node:'hs_a',symbol:'',_:'1'}))u.searchParams.set(k,v);
-  const r=await fetch(u,{headers:{...headers,'referer':'https://finance.sina.com.cn/'},signal:AbortSignal.timeout(5500),cache:'no-store'});
-  if(!r.ok)throw Error('东方财富资金流排行失败（'+primary+'）；新浪涨幅榜 HTTP '+r.status);
-  const raw=await r.text();let arr;try{arr=JSON.parse(raw)}catch{const m=raw.match(/\[[\s\S]*\]/);if(!m)throw Error('东方财富资金流排行失败（'+primary+'）；新浪涨幅榜格式异常');arr=JSON.parse(m[0])}
-  if(!Array.isArray(arr)||!arr.length)throw Error('东方财富资金流排行失败（'+primary+'）；新浪涨幅榜为空');
-  return arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:null,flow:null,marketCap:null,rankSource:'sina-top-gainers',primaryError:primary})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!x.name.includes('ST')&&x.price>0).slice(0,30);
+ const errors=[];
+ for(const host of ['push2delay.eastmoney.com','push2.eastmoney.com']){
+  try{
+   const u=new URL('https://'+host+'/api/qt/clist/get');
+   for(const [k,v] of Object.entries({pn:'1',pz:'100',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs:'m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23',fields:'f12,f14,f2,f3,f5,f6,f7,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23,f62,f115',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});if(!r.ok)throw Error(host+' HTTP '+r.status);
+   const body=await r.json(),diff=body?.data?.diff,list=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
+   const rows=list.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:Number(x.f2),changePct:Number(x.f3),amount:Number(x.f6),turnover:Number(x.f8),pe:Number(x.f9),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),marketCap:Number(x.f20),rankSource:'eastmoney-money-flow-'+host})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!x.name.includes('ST')&&x.price>0);
+   if(!rows.length)throw Error(host+' 返回空列表或无效字段');
+   return rows.slice(0,30);
+  }catch(e){errors.push(String(e?.message||e))}
  }
+ // Sina is a price/volume fallback only; it does not supply equivalent main-force net flow.
+ const u=new URL('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData');
+ for(const [k,v] of Object.entries({page:'1',num:'100',sort:'amount',asc:'0',node:'hs_a',symbol:'',_:'1'}))u.searchParams.set(k,v);
+ const r=await fetch(u,{headers:{...headers,'referer':'https://finance.sina.com.cn/'},signal:AbortSignal.timeout(5000),cache:'no-store'});
+ if(!r.ok)throw Error('东方财富资金流排行备用集群失败（'+errors.join('；')+'）；新浪成交额榜 HTTP '+r.status);
+ const raw=await r.text();let arr;try{arr=JSON.parse(raw)}catch{const m=raw.match(/\[[\s\S]*\]/);if(!m)throw Error('东方财富资金流排行失败（'+errors.join('；')+'）；新浪成交额榜格式异常');arr=JSON.parse(m[0])}
+ if(!Array.isArray(arr)||!arr.length)throw Error('东方财富资金流排行失败（'+errors.join('；')+'）；新浪成交额榜为空');
+ return arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:null,flow:null,marketCap:null,rankSource:'sina-turnover-fallback',primaryError:errors.join('；')})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!x.name.includes('ST')&&x.price>0).slice(0,30);
 }
+
 async function fetchStockFlowHistory(code){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
- const parseHistory=body=>{const arr=body?.data?.klines;if(!Array.isArray(arr)||!arr.length)throw Error('资金流历史为空');const rows=arr.map(line=>{const p=String(line).split(',');return{date:p[0]||null,mainNetInflow:p[1]==null||p[1]===''?null:Number(p[1]),smallNetInflow:p[2]==null||p[2]===''?null:Number(p[2]),mediumNetInflow:p[3]==null||p[3]===''?null:Number(p[3]),largeNetInflow:p[4]==null||p[4]===''?null:Number(p[4]),superLargeNetInflow:p[5]==null||p[5]===''?null:Number(p[5]),mainNetInflowPct:p[6]==null||p[6]===''?null:Number(p[6])}}).filter(x=>x.date&&Number.isFinite(x.mainNetInflow));if(!rows.length)throw Error('资金流历史没有有效主力净流入字段');return{rows,latest:rows.at(-1),cumulativeMainNetInflow:rows.reduce((sum,x)=>sum+x.mainNetInflow,0),historyDays:rows.length,period:rows.length>=5?'5-trading-days':'available-history',source:'eastmoney-stock-fflow-kline'};};
- for(const host of ['push2.eastmoney.com','push2his.eastmoney.com']){try{const u=new URL('https://'+host+'/api/qt/stock/fflow/kline/get');u.searchParams.set('secid',secid(code));u.searchParams.set('fields1','f1,f2,f3,f7');u.searchParams.set('fields2','f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65');u.searchParams.set('klt','101');u.searchParams.set('lmt','5');u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');const r=await fetch(u,{headers,signal:AbortSignal.timeout(4000),cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);return{...parseHistory(await r.json()),host};}catch(e){errors.push(host+': '+String(e?.message||e));}}
- // Fall back to a separately queried current-day flow snapshot; never label it as a five-day history.
- try{const u=new URL('https://push2.eastmoney.com/api/qt/stock/fflow/get');u.searchParams.set('secid',secid(code));u.searchParams.set('fields','f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f124,f125');u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');const r=await fetch(u,{headers,signal:AbortSignal.timeout(4000),cache:'no-store'});if(!r.ok)throw Error('当前资金流 HTTP '+r.status);const d=(await r.json())?.data;if(!d||d.f62==null||!Number.isFinite(Number(d.f62)))throw Error('当前主力净流入字段缺失');const row={date:new Date().toISOString().slice(0,10),mainNetInflow:Number(d.f62),mainNetInflowPct:d.f184==null?null:Number(d.f184)};return{rows:[row],latest:row,cumulativeMainNetInflow:row.mainNetInflow,historyDays:1,period:'current-day-snapshot',source:'eastmoney-stock-fflow-snapshot',historyUnavailable:errors.join('；')};}catch(e){errors.push('当前资金流备用接口: '+String(e?.message||e));}
- throw Error('个股主力资金流历史与快照数据源均不可用：'+errors.join('；'));
+ const hosts=['push2delay.eastmoney.com','push2.eastmoney.com','push2his.eastmoney.com'];
+ const parseHistory=body=>{
+  const arr=body?.data?.klines;if(!Array.isArray(arr)||!arr.length)throw Error('资金流历史为空');
+  const rows=arr.map(line=>{const p=String(line).split(',');return{date:p[0]||null,mainNetInflow:p[1]==null||p[1]===''?null:Number(p[1]),smallNetInflow:p[2]==null||p[2]===''?null:Number(p[2]),mediumNetInflow:p[3]==null||p[3]===''?null:Number(p[3]),largeNetInflow:p[4]==null||p[4]===''?null:Number(p[4]),superLargeNetInflow:p[5]==null||p[5]===''?null:Number(p[5]),mainNetInflowPct:p[6]==null||p[6]===''?null:Number(p[6])}}).filter(x=>x.date&&Number.isFinite(x.mainNetInflow));
+  if(!rows.length)throw Error('资金流历史没有有效主力净流入字段');
+  return{rows,latest:rows.at(-1),cumulativeMainNetInflow:rows.reduce((sum,x)=>sum+x.mainNetInflow,0),historyDays:rows.length,period:rows.length>=5?'5-trading-days':'available-history',source:'eastmoney-stock-fflow-kline'};
+ };
+ for(const host of hosts){
+  try{
+   const u=new URL('https://'+host+'/api/qt/stock/fflow/kline/get');
+   for(const [k,v] of Object.entries({secid:secid(code),fields1:'f1,f2,f3,f7',fields2:'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',klt:'101',lmt:'5',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(3200),cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
+   const parsed=parseHistory(await r.json());return{...parsed,host};
+  }catch(e){errors.push(host+': '+String(e?.message||e))}
+ }
+ // Current-day snapshot is an independent endpoint and must not be mistaken for multi-day history.
+ for(const host of ['push2delay.eastmoney.com','push2.eastmoney.com']){
+  try{
+   const u=new URL('https://'+host+'/api/qt/stock/fflow/get');
+   for(const [k,v] of Object.entries({secid:secid(code),fields:'f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f124,f125',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(3200),cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
+   const d=(await r.json())?.data;if(!d||d.f62==null||!Number.isFinite(Number(d.f62)))throw Error('当前主力净流入字段缺失');
+   const row={date:new Date().toISOString().slice(0,10),mainNetInflow:Number(d.f62),mainNetInflowPct:d.f184==null?null:Number(d.f184)};
+   return{rows:[row],latest:row,cumulativeMainNetInflow:row.mainNetInflow,historyDays:1,period:'current-day-snapshot',source:'eastmoney-stock-fflow-snapshot',historyUnavailable:errors.join('；'),host};
+  }catch(e){errors.push(host+' 当前快照: '+String(e?.message||e))}
+ }
+ throw Error('个股资金流历史/快照接口均未通过有效性校验：'+errors.join('；'));
 }
+
 async function fetchFinancialSnapshot(code){
- const u=new URL('https://datacenter-web.eastmoney.com/api/data/v1/get');
- const cols='ALL';
- for(const [k,v] of Object.entries({reportName:'RPT_LICO_FN_CPD',columns:cols,filter:'(SECURITY_CODE="'+code+'")',pageNumber:'1',pageSize:'5',sortColumns:'REPORT_DATE',sortTypes:'-1',source:'HSF10',client:'PC'}))u.searchParams.set(k,v);
- const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://emweb.securities.eastmoney.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(5000),cache:'no-store'});if(!r.ok)throw Error('财务摘要 HTTP '+r.status);
- const rows=(await r.json())?.result?.data;if(!Array.isArray(rows)||!rows.length)throw Error('东方财富财务摘要为空');
- return{source:'eastmoney-financial-main-index',fetchedAt:now(),rows:rows.map(x=>({reportDate:x.REPORT_DATE||x.REPORTDATE||x.QDATE||null,noticeDate:x.NOTICE_DATE||null,eps:x.BASIC_EPS??x.EPSJB??null,roe:x.WEIGHTAVG_ROE??x.ROEJQ??null,revenue:x.TOTAL_OPERATE_INCOME??x.TOTALOPERATEREVE??null,revenueGrowthPct:x.TOTAL_OPERATE_INCOME_YOY??x.TOTALOPERATEREVETZ??x.YSTZ??null,netProfit:x.PARENT_NETPROFIT??x.PARENTNETPROFIT??x.NETPROFIT??null,netProfitGrowthPct:x.PARENT_NETPROFITTZ??x.SJLTZ??null,operatingCashFlowPerShare:x.MGJYXJJE??null,debtAssetRatioPct:x.DEBT_ASSET_RATIO??x.ZCFZL??null}))};
+ const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
+ const market=/^(6|9)/.test(String(code))?'SH':'SZ',secucode=code+'.'+market;
+ const mapRows=rows=>rows.map(x=>({reportDate:x.REPORT_DATE||x.REPORTDATE||x.QDATE||x.REPORT_DATE_NAME||null,noticeDate:x.NOTICE_DATE||x.NOTICEDATE||null,eps:x.BASIC_EPS??x.EPSJB??null,roe:x.WEIGHTAVG_ROE??x.ROEJQ??null,revenue:x.TOTAL_OPERATE_INCOME??x.TOTALOPERATEREVE??x.TOTAL_OPERATE_INCOME??null,revenueGrowthPct:x.TOTAL_OPERATE_INCOME_YOY??x.TOTALOPERATEREVETZ??x.YSTZ??null,netProfit:x.PARENT_NETPROFIT??x.PARENTNETPROFIT??x.NETPROFIT??null,netProfitGrowthPct:x.PARENT_NETPROFITTZ??x.PARENTNETPROFITTZ??x.SJLTZ??null,operatingCashFlowPerShare:x.MGJYXJJE??x.MGJYXJJE??null,debtAssetRatioPct:x.DEBT_ASSET_RATIO??x.ZCFZL??null,grossMarginPct:x.XSMLL??x.SALES_GROSS_PROFIT_RATIO??null}));
+ const attempts=[
+  {url:'https://datacenter-web.eastmoney.com/api/data/v1/get',params:{reportName:'RPT_LICO_FN_CPD',columns:'ALL',filter:'(SECURITY_CODE="'+code+'")',pageNumber:'1',pageSize:'5',sortColumns:'REPORTDATE',sortTypes:'-1',source:'WEB',client:'WEB'}},
+  {url:'https://datacenter.eastmoney.com/securities/api/data/v1/get',params:{reportName:'RPT_F10_FINANCE_MAINFINADATA',columns:'ALL',filter:'(SECUCODE="'+secucode+'")',pageNumber:'1',pageSize:'5',sortColumns:'REPORT_DATE',sortTypes:'-1',source:'HSF10',client:'PC'}}
+ ];
+ for(const a of attempts){
+  try{
+   const u=new URL(a.url);for(const [k,v] of Object.entries({...a.params,_:String(Date.now())}))u.searchParams.set(k,v);
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
+   const body=await r.json(),rows=body?.result?.data;
+   if(!Array.isArray(rows)||!rows.length)throw Error(body?.message||body?.msg||'返回空财务记录');
+   const mapped=mapRows(rows);
+   if(!mapped.some(x=>x.reportDate||x.eps!=null||x.roe!=null||x.revenue!=null||x.netProfit!=null))throw Error('返回记录中缺少可识别的财务字段');
+   return{source:a.params.reportName,endpoint:a.url,fetchedAt:now(),rows:mapped,rawFieldSample:Object.keys(rows[0]||{}).slice(0,18)};
+  }catch(e){errors.push(a.url+': '+String(e?.message||e))}
+ }
+ throw Error('财务摘要接口均未通过有效性校验：'+errors.join('；'));
 }
+
 async function fetchSectorFlowRanks(type='industry'){
- const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'};
- const u=new URL('https://push2.eastmoney.com/api/qt/clist/get');
+ const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const fs=type==='concept'?'m:90+t:3+f:!50':'m:90+t:2+f:!50';
- for(const [k,v] of Object.entries({pn:'1',pz:'40',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs,fields:'f12,f14,f2,f3,f62,f184'}))u.searchParams.set(k,v);
- const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});
- if(!r.ok)throw Error('板块资金流 HTTP '+r.status);
- const body=await r.json(),diff=body?.data?.diff;
- const arr=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
- return arr.map(x=>({code:String(x.f12||''),name:String(x.f14||''),changePct:Number.isFinite(Number(x.f3))?Number(x.f3):null,flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),flowRatio:x.f184==null||x.f184===''?null:(Number.isFinite(Number(x.f184))?Number(x.f184):null),type})).filter(x=>x.code&&x.name);
+ for(const host of ['push2delay.eastmoney.com','push2.eastmoney.com']){
+  try{
+   const u=new URL('https://'+host+'/api/qt/clist/get');
+   for(const [k,v] of Object.entries({pn:'1',pz:'80',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs,fields:'f12,f14,f2,f3,f6,f62,f184',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(3500),cache:'no-store'});if(!r.ok)throw Error(host+' HTTP '+r.status);
+   const body=await r.json(),diff=body?.data?.diff,arr=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
+   if(!arr.length)throw Error(host+' 返回空板块列表');
+   const rows=arr.map(x=>({code:String(x.f12||''),name:String(x.f14||''),changePct:x.f3==null?null:Number(x.f3),amount:x.f6==null?null:Number(x.f6),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),flowRatio:x.f184==null||x.f184===''?null:(Number.isFinite(Number(x.f184))?Number(x.f184):null),type,source:host})).filter(x=>x.code&&x.name);
+   if(!rows.length)throw Error(host+' 返回记录缺少板块代码/名称');
+   return rows;
+  }catch(e){errors.push(String(e?.message||e))}
+ }
+ throw Error('板块资金流排行接口均不可用：'+errors.join('；'));
 }
+
 async function fetchStockBoards(code){
  const u=new URL('https://push2.eastmoney.com/api/qt/slist/get');
  u.searchParams.set('secid',secid(code));u.searchParams.set('spt','3');u.searchParams.set('fields','f12,f13,f14,f2,f3,f62');u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');
