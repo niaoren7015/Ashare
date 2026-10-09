@@ -40,14 +40,29 @@ async function quote(code){
  }catch(e){errors.push('新浪行情: '+String(e?.message||e))}
  throw Error('行情数据源均不可用。'+errors.join('；'));
 }
-async function kline(code,limit=120){
+async function fetchSinaKline(code,scale,count){
+ const sym=/^(6|688|5|9)/.test(String(code))?'sh'+code:'sz'+code;
+ const u=new URL('https://quotes.sina.cn/cn/api/jsonp_v2.php/CN_MarketData.getKLineData');
+ u.searchParams.set('symbol',sym);u.searchParams.set('scale',String(scale));u.searchParams.set('ma','no');u.searchParams.set('datalen',String(count));
+ const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://finance.sina.com.cn/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(5500),cache:'no-store'});
+ if(!r.ok)throw Error('新浪 K线 HTTP '+r.status);
+ const raw=await r.text(),m=raw.match(/\[[\s\S]*\]/);if(!m)throw Error('新浪接口未返回 JSON 数组');
+ const arr=JSON.parse(m[0]);if(!Array.isArray(arr)||!arr.length)throw Error('新浪接口返回空数据');
+ const num=v=>v==null||v===''||v==='-'?null:(Number.isFinite(Number(v))?Number(v):null);
+ const rows=arr.map(p=>({date:p.day||p.date||p.d,open:num(p.open),close:num(p.close),high:num(p.high),low:num(p.low),volume:num(p.volume),amount:num(p.amount),turnover:null,changePct:null})).filter(x=>x.date&&x.open!=null&&x.close!=null&&x.high!=null&&x.low!=null);
+ for(let i=0;i<rows.length;i++)if(i>0&&rows[i-1].close)rows[i].changePct=Number(((rows[i].close/rows[i-1].close-1)*100).toFixed(4));
+ if(!rows.length)throw Error('新浪接口数据字段不完整');
+ return rows;
+}
+async function kline(code,limit=120,mode='day'){
  code=String(code||'').trim();
  if(!/^\d{6}$/.test(code)) throw Error('股票代码应为6位数字');
- const count=Math.min(500,Math.max(20,Number.isFinite(+limit)?+limit:120));
+ const intraday=mode==='intraday',count=intraday?240:Math.min(500,Math.max(20,Number.isFinite(+limit)?+limit:120));
  const safeNum=v=>{if(v===undefined||v===null||v===''||v==='-')return null;const n=Number(v);return Number.isFinite(n)?n:null};
  const withDerivedChanges=rows=>rows.map((row,i)=>({...row,changePct:row.changePct??(i>0&&rows[i-1].close?Number(((row.close/rows[i-1].close-1)*100).toFixed(4)):null)}));
  const quality=rows=>{const n=rows.length||1;return{rowCount:rows.length,amountCoveragePct:Math.round(rows.filter(x=>x.amount!=null).length/n*100),changePctCoveragePct:Math.round(rows.filter(x=>x.changePct!=null).length/n*100),turnoverCoveragePct:Math.round(rows.filter(x=>x.turnover!=null).length/n*100)}};
  const started=Date.now(), errors=[];
+ if(intraday){try{const rows=await fetchSinaKline(code,5,240);return{source:'sina-intraday-5m',mode:'intraday',interval:'5m',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:'unknown',warning:'新浪财经5分钟数据，盘中行情可能存在延迟。'}}catch(e){throw Error('分时K线暂不可用：'+String(e?.message||e))}}
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
  // Eastmoney's historical K-line endpoint is push2his. push2delay is for delayed quotes and is not a K-line fallback.
  try{
@@ -85,15 +100,15 @@ async function kline(code,limit=120){
  // Independent third source for resilience if Eastmoney and Tencent fail.
  try{
   const sym=/^(6|688|5|9)/.test(code)?'sh'+code:'sz'+code;
-  const u=new URL('https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData');
+  const u=new URL('https://quotes.sina.cn/cn/api/jsonp_v2.php/CN_MarketData.getKLineData');
   u.searchParams.set('symbol',sym);
   u.searchParams.set('scale','240');
   u.searchParams.set('ma','no');
   u.searchParams.set('datalen',String(count));
   const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://finance.sina.com.cn/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(5000)});
   if(!r.ok)throw Error('Sina HTTP '+r.status);
-  const body=await r.json();
-  const arr=Array.isArray(body)?body:[];
+  const raw=await r.text(),match=raw.match(/\[[\s\S]*\]/);if(!match)throw Error('Sina returned non-JSONP K-line response');
+  const arr=JSON.parse(match[0]);
   const rows=withDerivedChanges(arr.map(p=>({date:p.day||p.date,open:safeNum(p.open),close:safeNum(p.close),high:safeNum(p.high),low:safeNum(p.low),volume:safeNum(p.volume),amount:safeNum(p.amount),changePct:null,turnover:null})).filter(x=>x.date&&x.close!=null));
   if(!rows.length)throw Error('Sina returned no valid K-line rows');
   return{source:'sina-kline-fallback',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:'unknown',warning:'东方财富与腾讯 K 线暂不可用，已切换新浪备用源；复权方式及未提供字段可能不同。',primaryError:errors.join('；')};
