@@ -56,20 +56,39 @@ async function quote(code){
  }catch(e){errors.push('新浪行情: '+String(e?.message||e))}
  throw Error('行情数据源均不可用。'+errors.join('；'));
 }
-async function fetchSinaKline(code,scale,count){
+async async function fetchSinaKline(code,scale,count){
  const sym=/^(6|688|5|9)/.test(String(code))?'sh'+code:'sz'+code;
- const u=new URL('https://quotes.sina.cn/cn/api/jsonp_v2.php/CN_MarketData.getKLineData');
- u.searchParams.set('symbol',sym);u.searchParams.set('scale',String(scale));u.searchParams.set('ma','no');u.searchParams.set('datalen',String(count));
- const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://finance.sina.com.cn/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(5500),cache:'no-store'});
- if(!r.ok)throw Error('新浪 K线 HTTP '+r.status);
- const raw=await r.text(),m=raw.match(/\[[\s\S]*\]/);if(!m)throw Error('新浪接口未返回 JSON 数组');
- const arr=JSON.parse(m[0]);if(!Array.isArray(arr)||!arr.length)throw Error('新浪接口返回空数据');
- const num=v=>v==null||v===''||v==='-'?null:(Number.isFinite(Number(v))?Number(v):null);
- const rows=arr.map(p=>({date:p.day||p.date||p.d,open:num(p.open),close:num(p.close),high:num(p.high),low:num(p.low),volume:num(p.volume),amount:num(p.amount),turnover:null,changePct:null})).filter(x=>x.date&&x.open!=null&&x.close!=null&&x.high!=null&&x.low!=null);
- for(let i=0;i<rows.length;i++)if(i>0&&rows[i-1].close)rows[i].changePct=Number(((rows[i].close/rows[i-1].close-1)*100).toFixed(4));
- if(!rows.length)throw Error('新浪接口数据字段不完整');
- return rows;
+ const params={symbol:sym,scale:String(scale),ma:'no',datalen:String(Math.min(1023,Math.max(1,count)))};
+ const urls=[
+  'https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_data=/CN_MarketDataService.getKLineData',
+  'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData'
+ ];
+ const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64)','referer':'https://finance.sina.com.cn/','accept':'application/json,text/plain,*/*'};
+ const errors=[];
+ for(const base of urls){
+  try{
+   const u=new URL(base);for(const [k,v] of Object.entries(params))u.searchParams.set(k,v);
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});
+   if(!r.ok)throw Error('HTTP '+r.status);
+   const raw=(await r.text()).trim();
+   if(!raw)throw Error('空响应');
+   let arr=null;
+   try{const parsed=JSON.parse(raw);if(Array.isArray(parsed))arr=parsed;else if(Array.isArray(parsed?.data))arr=parsed.data}catch{}
+   if(!arr){
+    const left=raw.indexOf('['),right=raw.lastIndexOf(']');
+    if(left>=0&&right>left){try{const parsed=JSON.parse(raw.slice(left,right+1));if(Array.isArray(parsed))arr=parsed}catch{}}
+   }
+   if(!Array.isArray(arr)||!arr.length)throw Error('响应中没有可解析的非空K线数组；预览 '+raw.slice(0,100).replace(/\s+/g,' '));
+   const num=v=>v==null||v===''||v==='-'?null:(Number.isFinite(Number(v))?Number(v):null);
+   const rows=arr.map(p=>({date:p.day||p.date||p.d,open:num(p.open),close:num(p.close),high:num(p.high),low:num(p.low),volume:num(p.volume),amount:num(p.amount),turnover:null,changePct:null})).filter(x=>x.date&&x.open!=null&&x.close!=null&&x.high!=null&&x.low!=null&&x.close>0&&x.high>=x.low);
+   for(let i=0;i<rows.length;i++)if(i>0&&rows[i-1].close)rows[i].changePct=Number(((rows[i].close/rows[i-1].close-1)*100).toFixed(4));
+   if(!rows.length)throw Error('数组内没有有效OHLC数据');
+   return rows;
+  }catch(e){errors.push(new URL(base).host+': '+String(e?.message||e))}
+ }
+ throw Error(errors.join('；'));
 }
+
 async function kline(code,limit=120,mode='day'){
  code=String(code||'').trim();
  if(!/^\d{6}$/.test(code)) throw Error('股票代码应为6位数字');
@@ -244,7 +263,7 @@ async function fetchScreenCandidates(){
 
 async function fetchStockFlowHistory(code){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
- const hosts=['push2delay.eastmoney.com','push2.eastmoney.com','push2his.eastmoney.com'];
+ const hosts=['push2his.eastmoney.com','push2.eastmoney.com','push2delay.eastmoney.com'];
  const parseHistory=body=>{
   const arr=body?.data?.klines;if(!Array.isArray(arr)||!arr.length)throw Error('资金流历史为空');
   const rows=arr.map(line=>{const p=String(line).split(',');return{date:p[0]||null,mainNetInflow:p[1]==null||p[1]===''?null:Number(p[1]),smallNetInflow:p[2]==null||p[2]===''?null:Number(p[2]),mediumNetInflow:p[3]==null||p[3]===''?null:Number(p[3]),largeNetInflow:p[4]==null||p[4]===''?null:Number(p[4]),superLargeNetInflow:p[5]==null||p[5]===''?null:Number(p[5]),mainNetInflowPct:p[6]==null||p[6]===''?null:Number(p[6]),unit:'CNY'}}).filter(x=>x.date&&Number.isFinite(x.mainNetInflow));
@@ -324,7 +343,35 @@ async function fetchStockBoards(code){
  return arr.map(x=>({code:String(x.f12||''),name:String(x.f14||''),changePct:x.f3==null?null:Number(x.f3)})).filter(x=>x.code&&x.name);
 }
 
+async function fetchEastmoneyAnnouncements(code){
+ const u=new URL('https://np-anotice-stock.eastmoney.com/api/security/ann');
+ for(const [k,v] of Object.entries({sr:'-1',page_size:'12',page_index:'1',ann_type:'A',client_source:'web',stock_list:code,f_node:'0',s_node:'0',_:String(Date.now())}))u.searchParams.set(k,v);
+ const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64)','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(5000),cache:'no-store'});
+ if(!r.ok)throw Error('东方财富公告 HTTP '+r.status);
+ const raw=(await r.text()).trim();if(!raw)throw Error('东方财富公告返回空响应');
+ let d;try{d=JSON.parse(raw)}catch{const m=raw.match(/^[^(]+\(([\s\S]*)\)\s*;?$/);if(!m)throw Error('东方财富公告响应不是有效JSON/JSONP');d=JSON.parse(m[1])}
+ const list=d?.data?.list;
+ if(!Array.isArray(list)||!list.length)throw Error('东方财富公告列表为空；success='+(d?.success??'未知')+'；字段='+(Object.keys(d||{}).join(',')));
+ const rows=list.map(x=>{
+  const codeInfo=Array.isArray(x.codes)?x.codes[0]:null;
+  const artCode=String(x.art_code||x.artCode||'');
+  const title=String(x.title||x.notice_title||'').trim();
+  const dateRaw=x.notice_date||x.eiTime||x.noticeDate||x.publish_time||'';
+  const date=String(dateRaw).slice(0,10);
+  const link=String(x.adjunctUrl||x.attach_url||'');
+  return{title,date,company:String(codeInfo?.short_name||codeInfo?.shortName||x.stock_name||''),code:String(codeInfo?.stock_code||code),url:link.startsWith('http')?link:(artCode?'https://data.eastmoney.com/notices/detail/'+code+'/'+artCode+'.html':'https://data.eastmoney.com/notices/'),source:'东方财富公告',articleCode:artCode||null};
+ }).filter(x=>x.title);
+ if(!rows.length)throw Error('东方财富公告列表没有可用标题');
+ return{source:'eastmoney-announcement',fetchedAt:now(),rows:rows.slice(0,12),officialPage:'https://data.eastmoney.com/notices/stock/'+code+'.html'};
+}
 async function fetchCninfoAnnouncements(code){
+ try{return await fetchEastmoneyAnnouncements(code)}
+ catch(eastmoneyError){
+  try{const fallback=await fetchCninfoAnnouncementsFallback(code);return{...fallback,primaryError:'东方财富公告失败：'+String(eastmoneyError?.message||eastmoneyError),warning:'已切换巨潮资讯备用公告源'}}
+  catch(cninfoError){throw Error('东方财富公告失败：'+String(eastmoneyError?.message||eastmoneyError)+'；巨潮资讯备用源失败：'+String(cninfoError?.message||cninfoError))}
+ }
+}
+async function fetchCninfoAnnouncementsFallback(code){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://www.cninfo.com.cn/new/disclosure/stock?stockCode='+code,'origin':'https://www.cninfo.com.cn','content-type':'application/x-www-form-urlencoded; charset=UTF-8','accept':'application/json, text/plain, */*'};
  const isSH=/^(6|9)/.test(String(code)),isBJ=/^[48]/.test(String(code));
  const column=isBJ?'bjse':isSH?'sse':'szse';
