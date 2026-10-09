@@ -452,13 +452,24 @@ async function fetchSectorFlowRanks(type='industry'){
 }
 
 async function fetchStockBoards(code){
- const u=new URL('https://push2.eastmoney.com/api/qt/slist/get');
- u.searchParams.set('secid',secid(code));u.searchParams.set('spt','3');u.searchParams.set('fields','f12,f13,f14,f2,f3,f62');u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');
- const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(4000),cache:'no-store'});
- if(!r.ok)throw Error('个股所属板块 HTTP '+r.status);
- const body=await r.json(),d=body?.data?.diff??body?.data?.items??body?.data;
- const arr=Array.isArray(d)?d:(d&&typeof d==='object'?Object.values(d):[]);
- return arr.map(x=>({code:String(x.f12||''),name:String(x.f14||''),changePct:x.f3==null?null:Number(x.f3)})).filter(x=>x.code&&x.name);
+ const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
+ const hosts=['push2.eastmoney.com','push2delay.eastmoney.com','push2his.eastmoney.com','29.push2.eastmoney.com','79.push2.eastmoney.com'];
+ for(const host of hosts){
+  try{
+   const u=new URL('https://'+host+'/api/qt/slist/get');
+   for(const [k,v] of Object.entries({secid:secid(code),spt:'3',fields:'f12,f13,f14,f2,f3,f62',ut:'fa5fd1943c7b386f172d6893dbbd1d0c',_:String(Date.now())}))u.searchParams.set(k,v);
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(3000),cache:'no-store'});
+   if(!r.ok)throw Error('HTTP '+r.status);
+   const raw=(await r.text()).trim();if(!raw)throw Error('空响应');
+   let body;try{body=JSON.parse(raw)}catch{throw Error('响应不是有效JSON')}
+   const d=body?.data?.diff??body?.data?.items??body?.data;
+   const arr=Array.isArray(d)?d:(d&&typeof d==='object'?Object.values(d):[]);
+   const rows=arr.map(x=>({code:String(x.f12||''),name:String(x.f14||''),changePct:x.f3==null?null:Number(x.f3),source:'eastmoney-stock-board-membership'})).filter(x=>x.code&&x.name);
+   if(rows.length)return rows;
+   throw Error('JSON有效但板块列表为空；rc='+(body?.rc??'未知'));
+  }catch(e){errors.push(host+': '+String(e?.message||e))}
+ }
+ throw Error('个股所属板块接口均未通过有效性校验：'+errors.join('；'));
 }
 
 async function fetchEastmoneyAnnouncements(code){
@@ -536,7 +547,9 @@ function computeShortTermFactors(rows,quoteData,klineQuality){
  if(atrPct!=null){if(atrPct>=8)add('volatility',-2,'ATR占股价比例偏高，波动风险较大');else if(atrPct>=5)add('volatility',-1,'ATR占股价比例偏高，需降低仓位');else add('volatility',0,'ATR波动水平未触发高波动惩罚')}
  if(distanceHighPct!=null&&ma20!=null){if(distanceHighPct<=-1&&distanceHighPct>=-6&&last.close>ma20)add('pullback_setup',1,'距20日高点回撤约1%至6%，且仍在MA20上方');else if(distanceHighPct>-1&&return5dPct!=null&&return5dPct>=8)add('overheat',-1.5,'短期涨幅较大且接近20日高点，避免追高');else if(distanceHighPct<=-10&&last.close<ma20)add('trend_damage',-1,'较20日高点明显回撤且位于MA20下方');else add('pullback_setup',0,'未形成明确回踩或突破结构')}
  const signal=known<2?'因子覆盖不足':score>=2?'偏强观察（等待入场条件）':score<=-2?'偏弱/回避观察':'中性震荡（等待确认）';
- return{asOfDate:last?.date||null,validBars:bars.length,ma5,ma10,ma20,ma60,ma20Slope5BarsPct:ma20Prev&&ma20!=null?Number(((ma20/ma20Prev-1)*100).toFixed(2)):null,return5dPct,return10dPct,return20dPct,high20,low20,distanceFrom20dHighPct:distanceHighPct,distanceFrom20dLowPct:distanceLowPct,volumeRatio5dTo20d:volumeRatio,volumeCoverage20Pct,amountCoveragePct,rsi14,atr14,atrPct,score:Number(score.toFixed(2)),knownFactorCount:known,signal,scoreParts,qualityNotes:[...(bars.length<60?['有效日K少于60根，MA60或中期结论可能缺失']:[]),...(amountCoveragePct==null||amountCoveragePct<80?['成交额覆盖不足80%，不据此判断资金强弱或量能']:[]),...(volumeCoverage20Pct<80?['近20日成交量覆盖不足80%，量比不作为可靠信号']:[]),...(quoteData?.source?['行情源：'+quoteData.source]:[])]};
+ const technicalIndicators={ma5,ma10,ma20,ma60,ma20Slope5BarsPct:ma20Prev&&ma20!=null?Number(((ma20/ma20Prev-1)*100).toFixed(2)):null,return5dPct,return10dPct,return20dPct,high20,low20,distanceFrom20dHighPct:distanceHighPct,distanceFrom20dLowPct:distanceLowPct,volumeRatio5dTo20d:volumeRatio,rsi14,atr14,atrPct};
+ const indicatorValues=Object.values(technicalIndicators),availableIndicators=indicatorValues.filter(v=>Number.isFinite(v)).length;
+ return{asOfDate:last?.date||null,validBars:bars.length,...technicalIndicators,technicalIndicatorCoverage:{available:availableIndicators,total:indicatorValues.length,note:'仅统计技术指标数值可用率；不等于评分因子组覆盖率'},scoringFactorGroups:{known:known,total:5,note:'knownFactorCount统计趋势、动量、量价确认、波动、形态等评分组，不代表全部技术指标覆盖'},volumeCoverage20Pct,amountCoveragePct,score:Number(score.toFixed(2)),knownFactorCount:known,signal,scoreParts,qualityNotes:[...(bars.length<60?['有效日K少于60根，MA60或中期结论可能缺失']:[]),...(amountCoveragePct==null||amountCoveragePct<80?['成交额覆盖不足80%，不据此判断资金强弱或量能']:[]),...(volumeCoverage20Pct<80?['近20日成交量覆盖不足80%，量比不作为可靠信号']:[]),...(quoteData?.source?['行情源：'+quoteData.source]:[])]};
 }
 
 async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(db&&p!=='/api/data-diagnostics')await init(db);if(p==='/api/data-diagnostics'){
@@ -659,7 +672,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    }
   };
   const messages=[
-   {role:'system',content:'你是严谨的A股短线量化研究与风险控制分析师。只能依据输入数据，不得把缺失值当作0/正常，不得编造新闻、公告、行业、财务、资金流、机构持仓、龙虎榜、股东变化、质押或支撑位。先分清已核验事实、来源线索、量化推断和缺失项。报告按此结构输出：1）交易结论与信号强度（偏强观察/中性等待/偏弱回避，不得把分数写成胜率）；2）短线量化因子面板：趋势MA5/10/20/60与MA20斜率、5/10/20日收益、20日高低点及距高点回撤、量比（只有成交量覆盖充分才可用）、RSI14、ATR14及ATR比例、因子覆盖率与综合分；解释各因子冲突，不能只凭单因子下结论；3）行业/题材与催化（必须有个股相关证据，泛市场新闻只可作为大盘背景）；4）资金流（注明来源、单位、日期/期间；日期不明的快照不得称今日流入，接口失败不得解读为资金中性）；5）财务与估值（注明报告期和原始字段，缺字段就不推断安全边际；亏损原因仅引用财报/公告明确披露）；6）官方公告和新闻（公告标题不是公告全文，提供原文链接）；7）条件式交易计划（观察触发、回踩确认、突破确认、失效条件、仓位与止损逻辑；具体价格只可来自真实K线/均线/区间，不可编造；若数据不足则只给条件不给价格）；8）风险清单；9）数据来源与逐项状态。短线因子是研究信号而非收益保证；结合A股短期反转、动量状态依赖、流动性和波动风险，不得假定任何因子恒定有效。明确不承诺收益。'},
+   {role:'system',content:'你是严谨的A股短线量化研究与风险控制分析师。只能依据输入数据，不得把缺失值当作0/正常，不得编造新闻、公告、行业、财务、资金流、机构持仓、龙虎榜、股东变化、质押或支撑位。先分清已核验事实、来源线索、量化推断和缺失项。报告按此结构输出：1）交易结论与信号强度（偏强观察/中性等待/偏弱回避，不得把分数写成胜率）；2）短线量化因子面板：趋势MA5/10/20/60与MA20斜率、5/10/20日收益、20日高低点及距高点回撤、量比（只有成交量覆盖充分才可用）、RSI14、ATR14及ATR比例、评分因子组覆盖与技术指标覆盖必须分开报告：knownFactorCount仅代表最多5个评分组（趋势、动量、量价确认、波动、形态）中有多少组可评估，禁止把它单独写成“技术因子覆盖率5/5”；应同时引用technicalIndicatorCoverage.available/total作为技术指标数值覆盖率；综合分不是胜率。解释各因子冲突，不能只凭单因子下结论；3）行业/题材与催化（必须有个股相关证据，泛市场新闻只可作为大盘背景）；4）资金流（注明来源、单位、日期/期间；日期不明的快照不得称今日流入，接口失败不得解读为资金中性）；5）财务与估值（注明报告期和原始字段，缺字段就不推断安全边际；亏损原因仅引用财报/公告明确披露）；6）官方公告和新闻（公告标题不是公告全文，提供原文链接）；7）条件式交易计划（观察触发、回踩确认、突破确认、失效条件、仓位与止损逻辑；具体价格只可来自真实K线/均线/区间，不可编造；若数据不足则只给条件不给价格）；8）风险清单；9）数据来源与逐项状态。短线因子是研究信号而非收益保证；结合A股短期反转、动量状态依赖、流动性和波动风险，不得假定任何因子恒定有效。明确不承诺收益。'},
    {role:'user',content:'请分析A股个股 '+code+'。以下是后端实际抓取数据；null/空数组表示缺失，不得补猜。'+JSON.stringify({generatedAt:now(),analysis:a,financialSnapshot:a.financialSnapshot,financialError:a.financialError,fundFlow:a.fundFlow,fundFlowError:a.fundFlowError,sectorContext:a.sectorContext,officialAnnouncements:a.officialAnnouncements,officialAnnouncementsError:a.officialAnnouncementsError,relatedNews:a.relatedNews,recentMarketNews:a.recentMarketNews,newsFetchError:a.newsFetchError,sourceAudit:a.dataCompleteness.sourceAudit,importantDataPolicy:'当前没有接入可验证的机构持仓、龙虎榜明细、股东增减持/质押结构化历史；不要声称已查到。请把巨潮公告标题作为待核验线索，不要当作公告全文。'} )}
   ];
   if(b.stream===true)return streamAIResponse(cfg,messages,async({content,generatedAt})=>{await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(code,'ai_analysis',JSON.stringify({model:cfg.ai_model,content,generatedAt,source:a}),generatedAt).run()});
