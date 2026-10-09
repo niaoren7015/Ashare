@@ -366,7 +366,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   const results=await Promise.all(chosen.map(async c=>{
    const [qResult,kResult,finResult]=await Promise.all([
     quote(c.code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
-    kline(c.code,80,'day').then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
+    kline(c.code,120,'day').then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
     fetchFinancialSnapshot(c.code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
    ]);
    const q=qResult.data||{code:c.code,name:c.name,price:c.price,changePct:c.changePct,source:c.rankSource,pe:c.pe,turnoverRate:c.turnover,amount:c.amount};
