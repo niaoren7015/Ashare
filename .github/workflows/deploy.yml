@@ -32,10 +32,11 @@ jobs:
           node <<'NODE'
           const fs = require('fs');
           const html = fs.readFileSync('public/index.html', 'utf8');
-          const scripts = [...html.matchAll(/<script>([\\s\\S]*?)<\\/script>/g)];
-          if (!scripts.length) throw new Error('No inline script found in public/index.html');
-          for (const [i, match] of scripts.entries()) new Function(match[1]);
-          console.log('Frontend JavaScript syntax passed:', scripts.length, 'inline script(s)');
+          const start = html.indexOf('<script>');
+          const end = html.lastIndexOf('</script>');
+          if (start < 0 || end <= start) throw new Error('No inline script found in public/index.html');
+          new Function(html.slice(start + 8, end));
+          console.log('Frontend inline JavaScript syntax passed');
           NODE
       - name: Deploy Worker and static assets
         run: npx wrangler deploy
