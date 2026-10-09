@@ -380,10 +380,9 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  const started=Date.now();
  try{
   if(!/^\d{6}$/.test(code))throw Error('股票代码应为6位数字');
-  const [qResult,kResult,newsResult,financeResult,flowResult]=await Promise.all([
+  const [qResult,kResult,financeResult,flowResult]=await Promise.all([
    quote(code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
    kline(code,120,'day').then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
-   fetchSinaMarketNews().then(data=>({data,error:null})).catch(e=>({data:[],error:String(e.message||e)})),
    fetchFinancialSnapshot(code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
    fetchStockFlowHistory(code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
   ]);
@@ -392,7 +391,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   const avg=n=>{const z=rows.slice(-n).map(x=>x.close).filter(Number.isFinite);return z.length?z.reduce((a,v)=>a+v,0)/z.length:null};
   const ma20=avg(20),ma60=avg(60),ma5=avg(5);
   const shortTermFactors=computeShortTermFactors(rows,qResult.data,k?.quality||null);
-  const relatedNews=(newsResult.data||[]).filter(x=>((x.title||'')+' '+(x.summary||'')).includes(code)||(q.name&&((x.title||'')+' '+(x.summary||'')).includes(q.name)));
+  const relatedNews=[];
   const [boardsResult,industryResult,conceptResult,cninfoResult]=await Promise.all([
    fetchStockBoards(code).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e.message||e)})),
    fetchSectorFlowRanks('industry').then(data=>({data,error:null})).catch(e=>({data:[],error:String(e.message||e)})),
@@ -417,15 +416,15 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
     financialSnapshot:!!financeResult.data?.rows?.length,
     fundFlowHistory:!!flowResult.data?.rows?.length,
     officialAnnouncements:!!cninfoResult.data?.rows?.length,
-    relatedNewsCount:relatedNews.length,
+    relatedNewsCount:0,
     boardCount:boards.length,
-    sourceAudit:{quote:{status:'validated',source:q.source,checkedAt:q.fetchedAt||now()},dailyKline:{status:rows.length>=20?'validated':rows.length?'partial':'unavailable',source:k?.source||null,validRows:rows.length,asOfDate:rows.at(-1)?.date||null,error:kResult.error||null,quality:k?.quality||null},financial:{status:financeResult.data?.rows?.length?'validated':'unavailable',source:financeResult.data?.source||null,rows:financeResult.data?.rows?.length||0,error:financeResult.error||null},stockFlow:{status:flowResult.data?.rows?.length?'validated':'unavailable',source:flowResult.data?.source||null,period:flowResult.data?.period||null,historyDays:flowResult.data?.historyDays||0,error:flowResult.error||null},announcements:{status:cninfoResult.data?.rows?.length?'validated':'unavailable',source:cninfoResult.data?.source||null,rows:cninfoResult.data?.rows?.length||0,error:cninfoResult.error||null},sectorMembership:{status:boards.length?'partial':'unavailable',rows:boards.length,error:boardsResult.error||null},news:{status:newsResult.error?'unavailable':relatedNews.length?'matched':'no_stock_match',source:'sina-finance-market-feed',matchedCount:relatedNews.length,error:newsResult.error||null,policy:'exact code/name match only; no match is not evidence that no company news exists'}},
-    missing:[...(kResult.error?['日K线抓取失败']:[]),...(rows.length<20?['有效日K不足20根']:[]),...(financeResult.error?['财务摘要缺失']:[]),...(flowResult.error?['个股资金流缺失']:[]),...(cninfoResult.error?['官方公告抓取失败']:[]),...(boardsResult.error?['行业/概念归属抓取失败']:[]),...(relatedNews.length===0?['个股相关新闻未命中']:[])]
+    sourceAudit:{quote:{status:'validated',source:q.source,checkedAt:q.fetchedAt||now()},dailyKline:{status:rows.length>=20?'validated':rows.length?'partial':'unavailable',source:k?.source||null,validRows:rows.length,asOfDate:rows.at(-1)?.date||null,error:kResult.error||null,quality:k?.quality||null},financial:{status:financeResult.data?.rows?.length?'validated':'unavailable',source:financeResult.data?.source||null,rows:financeResult.data?.rows?.length||0,error:financeResult.error||null},stockFlow:{status:flowResult.data?.rows?.length?'validated':'unavailable',source:flowResult.data?.source||null,period:flowResult.data?.period||null,historyDays:flowResult.data?.historyDays||0,error:flowResult.error||null},announcements:{status:cninfoResult.data?.rows?.length?'validated':'unavailable',source:cninfoResult.data?.source||null,rows:cninfoResult.data?.rows?.length||0,error:cninfoResult.error||null},sectorMembership:{status:boards.length?'partial':'unavailable',rows:boards.length,error:boardsResult.error||null},news:{status:'not_connected',source:null,matchedCount:0,error:'个股相关新闻源尚未通过实时有效性验收，已从个股AI输入中移除',policy:'不以通用财经资讯流替代个股新闻；需接入并验证按代码/公司名检索的来源后再恢复'}},
+    missing:[...(kResult.error?['日K线抓取失败']:[]),...(rows.length<20?['有效日K不足20根']:[]),...(financeResult.error?['财务摘要缺失']:[]),...(flowResult.error?['个股资金流缺失']:[]),...(cninfoResult.error?['官方公告抓取失败']:[]),...(boardsResult.error?['行业/概念归属抓取失败']:[]),['个股相关新闻源未验证，已从模型输入中移除']]
    }
   };
   const content=await callAI(cfg,[
    {role:'system',content:'你是严谨的A股短线量化研究与风险控制分析师。只能依据输入数据，不得把缺失值当作0/正常，不得编造新闻、公告、行业、财务、资金流、机构持仓、龙虎榜、股东变化、质押或支撑位。先分清已核验事实、来源线索、量化推断和缺失项。报告按此结构输出：1）交易结论与信号强度（偏强观察/中性等待/偏弱回避，不得把分数写成胜率）；2）短线量化因子面板：趋势MA5/10/20/60与MA20斜率、5/10/20日收益、20日高低点及距高点回撤、量比（只有成交量覆盖充分才可用）、RSI14、ATR14及ATR比例、因子覆盖率与综合分；解释各因子冲突，不能只凭单因子下结论；3）行业/题材与催化（必须有个股相关证据，泛市场新闻只可作为大盘背景）；4）资金流（注明来源、单位、日期/期间；日期不明的快照不得称今日流入，接口失败不得解读为资金中性）；5）财务与估值（注明报告期和原始字段，缺字段就不推断安全边际；亏损原因仅引用财报/公告明确披露）；6）官方公告和新闻（公告标题不是公告全文，提供原文链接）；7）条件式交易计划（观察触发、回踩确认、突破确认、失效条件、仓位与止损逻辑；具体价格只可来自真实K线/均线/区间，不可编造；若数据不足则只给条件不给价格）；8）风险清单；9）数据来源与逐项状态。短线因子是研究信号而非收益保证；结合A股短期反转、动量状态依赖、流动性和波动风险，不得假定任何因子恒定有效。明确不承诺收益。'},
-   {role:'user',content:'请分析A股个股 '+code+'。以下是后端实际抓取数据；null/空数组表示缺失，不得补猜。'+JSON.stringify({generatedAt:now(),analysis:a,financialSnapshot:a.financialSnapshot,financialError:a.financialError,fundFlow:a.fundFlow,fundFlowError:a.fundFlowError,sectorContext:a.sectorContext,officialAnnouncements:a.officialAnnouncements,officialAnnouncementsError:a.officialAnnouncementsError,relatedNews:a.relatedNews,recentMarketNews:(a.recentMarketNews||[]).slice(0,6).map(x=>({title:x.title,publishedAt:x.publishedAt,source:x.source,policy:'仅作市场背景，不可作为该公司的直接催化证据'})),newsFetchError:a.newsFetchError,sourceAudit:a.dataCompleteness.sourceAudit,importantDataPolicy:'当前没有接入可验证的机构持仓、龙虎榜明细、股东增减持/质押结构化历史；不要声称已查到。请把巨潮公告标题作为待核验线索，不要当作公告全文。'} )}
+   {role:'user',content:'请分析A股个股 '+code+'。以下是后端实际抓取数据；null/空数组表示缺失，不得补猜。'+JSON.stringify({generatedAt:now(),analysis:a,financialSnapshot:a.financialSnapshot,financialError:a.financialError,fundFlow:a.fundFlow,fundFlowError:a.fundFlowError,sectorContext:a.sectorContext,officialAnnouncements:a.officialAnnouncements,officialAnnouncementsError:a.officialAnnouncementsError,relatedNews:[],newsFetchError:'个股相关新闻源未通过实时有效性验收，已从本次个股报告输入中移除；不得据此断言公司没有相关新闻',sourceAudit:a.dataCompleteness.sourceAudit,importantDataPolicy:'当前没有接入可验证的机构持仓、龙虎榜明细、股东增减持/质押结构化历史；不要声称已查到。请把巨潮公告标题作为待核验线索，不要当作公告全文。'} )}
   ],65000,5000);
   const created=now();
   await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(code,'ai_analysis',JSON.stringify({model:cfg.ai_model,content,generatedAt:created,source:a}),created).run();
