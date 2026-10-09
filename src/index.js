@@ -289,7 +289,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const peakDrawdown=closes.length?Number((Math.min(...closes.map((v,i)=>v/Math.max(...closes.slice(0,i+1))-1))*100).toFixed(2)):null;
    const ma5=avg(5),ma20=avg(20),ma60=avg(60);
    const trend=last&&ma20!=null&&ma60!=null?(last.close>ma20&&ma20>=ma60?'偏强':last.close<ma20&&ma20<=ma60?'偏弱':'震荡/待确认'):'技术趋势数据不足';
-   const analysis={quote:q,klineSource:k?.source||null,klineFetchedAt:k?.fetchedAt||null,klineError:kResult.error,indicators:{ma5,ma20,ma60,trend,return5dPct:ret(5),return20dPct:ret(20),low20,high20,drawdown20dPct:peakDrawdown},fundFlowHistory:c.flowHistory||null,flowHistoryError:c.flowHistoryError||null,financialSnapshot:finResult.data,financialSnapshotError:finResult.error,dataQuality:{flowKnown:!!c.flowHistory?.latest&&Number.isFinite(c.flowHistory.latest.mainNetInflow),flowSource:c.flowHistory?.source||c.rankSource,flowPeriod:c.flowHistory?.period||null,flowHistoryDays:c.flowHistory?.historyDays||0,financialStatementsAvailable:!!finResult.data?.rows?.length,sectorFlowMatched:false},conclusion:{signal:trend==='偏强'?'观察回踩/放量确认':trend==='偏弱'?'等待止跌和趋势修复':'等待支撑确认',risk:[...(c.flow==null?['个股主力资金流缺失或数据源不支持']:[]),...(qResult.error?['独立实时行情获取失败，采用资金流榜快照']:[]),...(kResult.error?['日K线获取失败，无法可靠计算支撑位']:[])]}};
+   const analysis={quote:q,klineSource:k?.source||null,klineFetchedAt:k?.fetchedAt||null,klineError:kResult.error,indicators:{ma5,ma20,ma60,trend,return5dPct:ret(5),return20dPct:ret(20),low20,high20,drawdown20dPct:peakDrawdown},fundFlowHistory:c.flowHistory||null,flowHistoryError:c.flowHistoryError||null,flowSnapshot:Number.isFinite(c.flow)?{date:now().slice(0,10),mainNetInflow:c.flow,period:'current-day-ranking-snapshot',source:c.rankSource}:null,financialSnapshot:finResult.data,financialSnapshotError:finResult.error,dataQuality:{flowKnown:(!!c.flowHistory?.latest&&Number.isFinite(c.flowHistory.latest.mainNetInflow))||Number.isFinite(c.flow),flowSource:c.flowHistory?.source||c.rankSource,flowPeriod:c.flowHistory?.period||(Number.isFinite(c.flow)?'current-day-ranking-snapshot':null),flowHistoryDays:c.flowHistory?.historyDays||0,financialStatementsAvailable:!!finResult.data?.rows?.length,sectorFlowMatched:false},conclusion:{signal:trend==='偏强'?'观察回踩/放量确认':trend==='偏弱'?'等待止跌和趋势修复':'等待支撑确认',risk:[...(c.flow==null?['个股主力资金流缺失或数据源不支持']:[]),...(qResult.error?['独立实时行情获取失败，采用资金流榜快照']:[]),...(kResult.error?['日K线获取失败，无法可靠计算支撑位']:[])]}};
    return {...c,ok:true,analysis};
   }));
   stage='读取候选股所属板块及板块资金流';
@@ -305,6 +305,12 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   }
   const good=results.filter(x=>x.ok);
   if(!good.length)throw Error('三只候选股均未能完成基础数据核验');
+   const indexCount=market.filter(x=>x&&Number.isFinite(x.price)&&x.price>0).length;
+   const quoteCount=good.filter(x=>Number.isFinite(x.analysis.quote?.price)&&x.analysis.quote.price>0).length;
+   const klineCount=good.filter(x=>x.analysis.indicators?.ma20!=null).length;
+   const flowCount=good.filter(x=>x.analysis.dataQuality?.flowKnown).length;
+   const financeCount=good.filter(x=>x.analysis.dataQuality?.financialStatementsAvailable).length;
+   if(indexCount<2||quoteCount<3||klineCount<2||flowCount<2)throw Error('基础数据质量门槛未通过，暂不生成误导性报告。可用数据：指数 '+indexCount+'/3，个股实时行情 '+quoteCount+'/3，至少20日有效日K '+klineCount+'/3，个股资金流（历史或当日快照） '+flowCount+'/3，财务摘要 '+financeCount+'/3。请稍后重试；系统已尝试备用数据源。');
   const payload={
    generatedAt:now(),elapsedMs:Date.now()-started,marketIndices:market,
    marketNews:newsResult.items.slice(0,12),newsFetchError:newsResult.error,
