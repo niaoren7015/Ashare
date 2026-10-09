@@ -77,13 +77,13 @@ async function kline(code,limit=120,mode='day'){
   // Tencent intraday endpoint is the second fallback; unlike the Sina JSONP endpoint it returns ordinary JSON.
   try{
    const sym=/^(6|688|5|9)/.test(code)?'sh'+code:'sz'+code;
-   const u=new URL('https://web.ifzq.gtimg.cn/appstock/app/kline/mkline');
+   const u=new URL('https://proxy.finance.qq.com/ifzqgtimg/appstock/app/kline/mkline');
    u.searchParams.set('param',sym+',m5,,240');
    u.searchParams.set('_',String(Date.now()));
    const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://gu.qq.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(5000),cache:'no-store'});
    if(!r.ok)throw Error('腾讯5分钟K线 HTTP '+r.status);
    const body=await r.json(),node=body?.data?.[sym],arr=node?.m5||node?.m5v||[];
-   const rows=withDerivedChanges(arr.map(p=>({date:String(p[0]||''),open:safeNum(p[1]),close:safeNum(p[2]),high:safeNum(p[3]),low:safeNum(p[4]),volume:safeNum(p[5]),amount:safeNum(p[6]),changePct:null,turnover:null})).filter(x=>x.date&&x.open!=null&&x.close!=null&&x.high!=null&&x.low!=null));
+   const rows=withDerivedChanges(arr.map(p=>{const v=Array.isArray(p)?p:String(p||'').split(',');return{date:String(v[0]||''),open:safeNum(v[1]),close:safeNum(v[2]),high:safeNum(v[3]),low:safeNum(v[4]),volume:safeNum(v[5]),amount:safeNum(v[6]),changePct:null,turnover:null}}).filter(x=>x.date&&x.open!=null&&x.close!=null&&x.high!=null&&x.low!=null));
    if(!rows.length)throw Error('腾讯5分钟K线没有有效数据');
    return{source:'tencent-intraday-5m',mode:'intraday',interval:'5m',fetchedAt:now(),latencyMs:Date.now()-started,rows:rows.slice(-240),quality:quality(rows),adjustment:'unknown',warning:'东方财富5分钟K线不可用，已切换腾讯5分钟数据；部分成交额字段可能缺失。',primaryError:errors.join('；')};
   }catch(e){errors.push('腾讯5分钟K线: '+String(e?.message||e))}
