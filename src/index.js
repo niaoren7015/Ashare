@@ -165,8 +165,8 @@ async function fetchScreenCandidates(){
   const u=new URL('https://push2.eastmoney.com/api/qt/clist/get');
   for(const [k,v] of Object.entries({pn:'1',pz:'100',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs:'m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23',fields:'f12,f14,f2,f3,f5,f6,f7,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23,f62,f115'}))u.searchParams.set(k,v);
   const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
-  const body=await r.json(),diff=body?.data?.diff;if(!Array.isArray(diff)||!diff.length)throw Error('返回空列表');
-  const rows=diff.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:Number(x.f2),changePct:Number(x.f3),amount:Number(x.f6),turnover:Number(x.f8),pe:Number(x.f9),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),marketCap:Number(x.f20),rankSource:'eastmoney-money-flow'})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!x.name.includes('ST')&&x.price>0);
+  const body=await r.json(),diff=body?.data?.diff;const list=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);if(!list.length)throw Error('返回空列表');
+  const rows=list.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:Number(x.f2),changePct:Number(x.f3),amount:Number(x.f6),turnover:Number(x.f8),pe:Number(x.f9),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),marketCap:Number(x.f20),rankSource:'eastmoney-money-flow'})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!x.name.includes('ST')&&x.price>0);
   if(!rows.length)throw Error('返回数据无有效股票');return rows.slice(0,30);
  }catch(e){
   const primary=String(e?.message||e);
@@ -179,6 +179,16 @@ async function fetchScreenCandidates(){
   if(!Array.isArray(arr)||!arr.length)throw Error('东方财富资金流排行失败（'+primary+'）；新浪涨幅榜为空');
   return arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:null,flow:null,marketCap:null,rankSource:'sina-top-gainers',primaryError:primary})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!x.name.includes('ST')&&x.price>0).slice(0,30);
  }
+}
+async function fetchStockFlowHistory(code){
+ const u=new URL('https://push2.eastmoney.com/api/qt/stock/fflow/kline/get');
+ u.searchParams.set('secid',secid(code));u.searchParams.set('fields1','f1,f2,f3,f7');u.searchParams.set('fields2','f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65');u.searchParams.set('klt','101');u.searchParams.set('lmt','5');u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');
+ const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(4500),cache:'no-store'});
+ if(!r.ok)throw Error('个股资金流 HTTP '+r.status);
+ const body=await r.json(),arr=body?.data?.klines;
+ if(!Array.isArray(arr)||!arr.length)throw Error('个股资金流历史为空');
+ const rows=arr.map(line=>{const p=String(line).split(',');return{date:p[0]||null,mainNetInflow:p[1]==null||p[1]===''?null:Number(p[1]),smallNetInflow:p[2]==null||p[2]===''?null:Number(p[2]),mediumNetInflow:p[3]==null||p[3]===''?null:Number(p[3]),largeNetInflow:p[4]==null||p[4]===''?null:Number(p[4]),superLargeNetInflow:p[5]==null||p[5]===''?null:Number(p[5]),mainNetInflowPct:p[6]==null||p[6]===''?null:Number(p[6])}}).filter(x=>x.date);
+ return {rows,latest:rows.at(-1)||null,cumulativeMainNetInflow:rows.some(x=>Number.isFinite(x.mainNetInflow))?rows.reduce((sum,x)=>sum+(Number.isFinite(x.mainNetInflow)?x.mainNetInflow:0),0):null,source:'eastmoney-stock-fflow-kline'};
 }
 async function fetchSectorFlowRanks(type='industry'){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'};
@@ -223,8 +233,13 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    if(Number.isFinite(c.amount)&&c.amount>300000000)score+=1;
    return {...c,preScore:Number(score.toFixed(2))};
   }).sort((a,b)=>b.preScore-a.preScore);
-  const flowPositive=ranked.filter(c=>c.flow!=null&&c.flow>0&&c.changePct<6&&(!Number.isFinite(c.pe)||c.pe>0));
-  const chosen=(flowPositive.length>=3?flowPositive:ranked).slice(0,3);
+  const flowChecked=await Promise.all(ranked.slice(0,8).map(async c=>{
+   try{return {...c,flowHistory:await fetchStockFlowHistory(c.code),flowHistoryError:null}}
+   catch(e){return {...c,flowHistory:null,flowHistoryError:String(e.message||e)}}
+  }));
+  const flowPositive=flowChecked.filter(c=>c.flowHistory?.latest?.mainNetInflow>0&&c.changePct<6&&(!Number.isFinite(c.pe)||c.pe>0))
+   .sort((a,b)=>(b.flowHistory.cumulativeMainNetInflow||0)-(a.flowHistory.cumulativeMainNetInflow||0));
+  const chosen=(flowPositive.length>=3?flowPositive:flowChecked.filter(c=>c.flowHistory).length>=3?flowChecked.filter(c=>c.flowHistory).sort((a,b)=>(b.flowHistory?.cumulativeMainNetInflow||-Infinity)-(a.flowHistory?.cumulativeMainNetInflow||-Infinity)):ranked).slice(0,3);
   // Fetch actual quote + daily bars for only the three finalists, avoiding the old high fan-out pattern.
   const results=await Promise.all(chosen.map(async c=>{
    const [qResult,kResult]=await Promise.all([
@@ -240,7 +255,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const peakDrawdown=closes.length?Number((Math.min(...closes.map((v,i)=>v/Math.max(...closes.slice(0,i+1))-1))*100).toFixed(2)):null;
    const ma5=avg(5),ma20=avg(20),ma60=avg(60);
    const trend=last&&ma20!=null&&ma60!=null?(last.close>ma20&&ma20>=ma60?'偏强':last.close<ma20&&ma20<=ma60?'偏弱':'震荡/待确认'):'技术趋势数据不足';
-   const analysis={quote:q,klineSource:k?.source||null,klineFetchedAt:k?.fetchedAt||null,klineError:kResult.error,indicators:{ma5,ma20,ma60,trend,return5dPct:ret(5),return20dPct:ret(20),low20,high20,drawdown20dPct:peakDrawdown},dataQuality:{flowKnown:c.flow!=null,flowSource:c.rankSource,financialStatementsAvailable:false,sectorFlowMatched:false},conclusion:{signal:trend==='偏强'?'观察回踩/放量确认':trend==='偏弱'?'等待止跌和趋势修复':'等待支撑确认',risk:[...(c.flow==null?['个股主力资金流缺失或数据源不支持']:[]),...(qResult.error?['独立实时行情获取失败，采用资金流榜快照']:[]),...(kResult.error?['日K线获取失败，无法可靠计算支撑位']:[])]}};
+   const analysis={quote:q,klineSource:k?.source||null,klineFetchedAt:k?.fetchedAt||null,klineError:kResult.error,indicators:{ma5,ma20,ma60,trend,return5dPct:ret(5),return20dPct:ret(20),low20,high20,drawdown20dPct:peakDrawdown},fundFlowHistory:c.flowHistory||null,flowHistoryError:c.flowHistoryError||null,dataQuality:{flowKnown:!!c.flowHistory?.latest&&Number.isFinite(c.flowHistory.latest.mainNetInflow),flowSource:c.flowHistory?.source||c.rankSource,financialStatementsAvailable:false,sectorFlowMatched:false},conclusion:{signal:trend==='偏强'?'观察回踩/放量确认':trend==='偏弱'?'等待止跌和趋势修复':'等待支撑确认',risk:[...(c.flow==null?['个股主力资金流缺失或数据源不支持']:[]),...(qResult.error?['独立实时行情获取失败，采用资金流榜快照']:[]),...(kResult.error?['日K线获取失败，无法可靠计算支撑位']:[])]}};
    return {...c,ok:true,analysis};
   }));
   const [sectorRanks,boardResults]=await Promise.all([
@@ -260,7 +275,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    marketNews:newsResult.items.slice(0,12),newsFetchError:newsResult.error,
    selectionMethod:'资金流优先 + 估值字段可用性 + 涨幅不过热 + 换手率/成交额 + 日K趋势/回撤复核',
    candidates:good.map(x=>({
-    stock:{code:x.code,name:x.name,price:x.analysis.quote.price,changePct:x.changePct,amount:x.amount,turnover:x.turnover,pe:x.analysis.quote.pe??x.pe,pb:x.analysis.quote.pb??null,flow:x.flow,flowSource:x.rankSource,preScore:x.preScore},
+    stock:{code:x.code,name:x.name,price:x.analysis.quote.price,changePct:x.changePct,amount:x.amount,turnover:x.turnover,pe:x.analysis.quote.pe??x.pe,pb:x.analysis.quote.pb??null,flow:x.flow,flowSource:x.analysis.fundFlowHistory?.source||x.rankSource,flowHistory:x.analysis.fundFlowHistory,flowHistoryError:x.analysis.flowHistoryError,preScore:x.preScore},
     technical:x.analysis.indicators,klineSource:x.analysis.klineSource,klineError:x.analysis.klineError,
     sectorContext:x.sectorContext,dataQuality:x.analysis.dataQuality
    })),
@@ -272,7 +287,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    ]
   };
   const content=await callAI(cfg,[
-   {role:'system',content:'你是严谨的A股量化研究与风险控制团队。只根据输入数据，不得编造公司、行业归属、财报、资金流、新闻、价格或技术指标。最终必须给出恰好3只股票，按建仓观察优先级1-3排序；如果数据不足以支持三只合格标的，明确标注“观察名单/暂不建仓”，不得为凑数虚构确定性。每只必须分项说明：所属板块（只有有证据时才写；否则写待核实）、题材催化和新闻证据及关联程度、板块资金趋势（缺失则明确）、个股主力资金净流入/流出及来源、估值与基本面（区分可验证数据与缺失项）、未过度炒作证据、量价/均线/近20日区间和回撤、主要风险、建仓优先级。建仓操作必须给出基于现价和真实日K支撑/均线的条件式区间：首笔观察仓、回踩加仓条件、突破跟随条件、失效/止损条件；若K线或支撑数据缺失，不得编造具体价格，改用等待数据的条件。优先寻找正向资金、板块资金改善、基本面支撑、低拥挤且估值有安全边际的个股；若输入无法证明其中某项，要把它列为未验证而非给高分。明确避免追高，不能承诺收益。开头先总结市场环境和风险偏好，再列出三只股票，结尾列出本轮筛选数据缺口与下一步核验清单。'},
+   {role:'system',content:'你是严谨的A股量化研究与风险控制团队。只根据输入数据，不得编造公司、行业归属、财报、资金流、新闻、价格或技术指标。最终必须给出恰好3只股票，按建仓观察优先级1-3排序；如果数据不足以支持三只合格标的，明确标注“观察名单/暂不建仓”，不得为凑数虚构确定性。每只必须分项说明：所属板块（只有有证据时才写；否则写待核实）、题材催化和新闻证据及关联程度、板块资金趋势（缺失则明确）、个股近5个交易日主力净流入/流出（优先使用资金流历史接口，必须给出日期和合计；接口失败则明确未知）及来源、估值与基本面（区分可验证数据与缺失项）、未过度炒作证据、量价/均线/近20日区间和回撤、主要风险、建仓优先级。建仓操作必须给出基于现价和真实日K支撑/均线的条件式区间：首笔观察仓、回踩加仓条件、突破跟随条件、失效/止损条件；若K线或支撑数据缺失，不得编造具体价格，改用等待数据的条件。优先寻找正向资金、板块资金改善、基本面支撑、低拥挤且估值有安全边际的个股；若输入无法证明其中某项，要把它列为未验证而非给高分。明确避免追高，不能承诺收益。开头先总结市场环境和风险偏好，再列出三只股票，结尾列出本轮筛选数据缺口与下一步核验清单。'},
    {role:'user',content:JSON.stringify(payload)}
   ],55000);
   const created=now();
