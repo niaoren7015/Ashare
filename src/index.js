@@ -215,11 +215,11 @@ async function fetchStockFlowHistory(code){
 }
 async function fetchFinancialSnapshot(code){
  const u=new URL('https://datacenter-web.eastmoney.com/api/data/v1/get');
- const cols='SECURITY_CODE,SECURITY_NAME_ABBR,REPORT_DATE,NOTICE_DATE,BASIC_EPS,WEIGHTAVG_ROE,TOTAL_OPERATE_INCOME,YSTZ,NETPROFIT,SJLTZ,MGJYXJJE,DEBT_ASSET_RATIO';
- for(const [k,v] of Object.entries({reportName:'RPT_F10_FINANCE_MAINFINDEX',columns:cols,filter:'(SECURITY_CODE="'+code+'")',pageNumber:'1',pageSize:'5',sortColumns:'REPORT_DATE',sortTypes:'-1',source:'HSF10',client:'PC'}))u.searchParams.set(k,v);
+ const cols='ALL';
+ for(const [k,v] of Object.entries({reportName:'RPT_LICO_FN_CPD',columns:cols,filter:'(SECURITY_CODE="'+code+'")',pageNumber:'1',pageSize:'5',sortColumns:'REPORT_DATE',sortTypes:'-1',source:'HSF10',client:'PC'}))u.searchParams.set(k,v);
  const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://emweb.securities.eastmoney.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(5000),cache:'no-store'});if(!r.ok)throw Error('财务摘要 HTTP '+r.status);
  const rows=(await r.json())?.result?.data;if(!Array.isArray(rows)||!rows.length)throw Error('东方财富财务摘要为空');
- return{source:'eastmoney-financial-main-index',fetchedAt:now(),rows:rows.map(x=>({reportDate:x.REPORT_DATE||null,noticeDate:x.NOTICE_DATE||null,eps:x.BASIC_EPS??null,roe:x.WEIGHTAVG_ROE??null,revenue:x.TOTAL_OPERATE_INCOME??null,revenueGrowthPct:x.YSTZ??null,netProfit:x.NETPROFIT??null,netProfitGrowthPct:x.SJLTZ??null,operatingCashFlowPerShare:x.MGJYXJJE??null,debtAssetRatioPct:x.DEBT_ASSET_RATIO??null}))};
+ return{source:'eastmoney-financial-main-index',fetchedAt:now(),rows:rows.map(x=>({reportDate:x.REPORT_DATE||x.REPORTDATE||x.QDATE||null,noticeDate:x.NOTICE_DATE||null,eps:x.BASIC_EPS??x.EPSJB??null,roe:x.WEIGHTAVG_ROE??x.ROEJQ??null,revenue:x.TOTAL_OPERATE_INCOME??x.TOTALOPERATEREVE??null,revenueGrowthPct:x.TOTAL_OPERATE_INCOME_YOY??x.TOTALOPERATEREVETZ??x.YSTZ??null,netProfit:x.PARENT_NETPROFIT??x.PARENTNETPROFIT??x.NETPROFIT??null,netProfitGrowthPct:x.PARENT_NETPROFITTZ??x.SJLTZ??null,operatingCashFlowPerShare:x.MGJYXJJE??null,debtAssetRatioPct:x.DEBT_ASSET_RATIO??x.ZCFZL??null}))};
 }
 async function fetchSectorFlowRanks(type='industry'){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'};
@@ -310,7 +310,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const klineCount=good.filter(x=>x.analysis.indicators?.ma20!=null).length;
    const flowCount=good.filter(x=>x.analysis.dataQuality?.flowKnown).length;
    const financeCount=good.filter(x=>x.analysis.dataQuality?.financialStatementsAvailable).length;
-   if(indexCount<2||quoteCount<3||klineCount<2||flowCount<2)throw Error('基础数据质量门槛未通过，暂不生成误导性报告。可用数据：指数 '+indexCount+'/3，个股实时行情 '+quoteCount+'/3，至少20日有效日K '+klineCount+'/3，个股资金流（历史或当日快照） '+flowCount+'/3，财务摘要 '+financeCount+'/3。请稍后重试；系统已尝试备用数据源。');
+   if(indexCount<2||quoteCount<3||klineCount<2||flowCount<2||financeCount<2)throw Error('基础数据质量门槛未通过，暂不生成误导性报告。可用数据：指数 '+indexCount+'/3，个股实时行情 '+quoteCount+'/3，至少20日有效日K '+klineCount+'/3，个股资金流（历史或当日快照） '+flowCount+'/3，财务摘要 '+financeCount+'/3。请稍后重试；系统已尝试备用数据源。');
   const payload={
    generatedAt:now(),elapsedMs:Date.now()-started,marketIndices:market,
    marketNews:newsResult.items.slice(0,12),newsFetchError:newsResult.error,
