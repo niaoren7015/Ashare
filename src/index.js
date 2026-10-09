@@ -409,7 +409,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    fundFlow:flowResult.data,fundFlowError:flowResult.error,
    sectorContext:{boards,boardMembershipError:boardsResult.error,industryFlowSource:industryResult.data[0]?.source||null,industryFlowError:industryResult.error,conceptFlowSource:conceptResult.data[0]?.source||null,conceptFlowError:conceptResult.error},
    officialAnnouncements:cninfoResult.data,officialAnnouncementsError:cninfoResult.error,
-   relatedNews,recentMarketNews:(newsResult.data||[]).slice(0,8),newsFetchError:newsResult.error,
+   relatedNews,recentMarketNews:[],newsFetchError:'通用新浪资讯流未作为个股新闻输入；个股相关新闻源尚未通过验证',
    dataCompleteness:{
     quote:!!q,validDailyBars:rows.length,hasAtLeast20DailyBars:rows.length>=20,
     amountCoveragePct:k?.quality?.amountCoveragePct??null,
