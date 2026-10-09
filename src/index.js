@@ -14,52 +14,55 @@ let schemaReady=false;async function init(db){if(db&&!schemaReady){for(const s o
 async function quote(code){code=String(code||'').trim();if(!/^\d{6}$/.test(code))throw Error('股票代码应为6位数字');const fields='f43,f44,f45,f46,f47,f48,f57,f58,f60,f116,f117,f162,f167,f168';const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};const urls=['https://push2.eastmoney.com/api/qt/stock/get','https://push2delay.eastmoney.com/api/qt/stock/get'];const t=Date.now();let lastErr='';for(const host of urls){try{const u=new URL(host);u.searchParams.set('secid',secid(code));u.searchParams.set('fields',fields);u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');u.searchParams.set('_',String(Date.now()));const r=await fetch(u,{headers,signal:AbortSignal.timeout(3000),cf:{cacheTtl:0,cacheEverything:false}});if(!r.ok){lastErr=host+' HTTP '+r.status;continue}const body=await r.json();const d=body?.data;if(!d){lastErr=host+' empty data';continue}const n=(v,div=1)=>(v==null||v==='-')?null:Number(v)/div;return{source:host.includes('delay')?'eastmoney-delay':'eastmoney',fetchedAt:now(),latencyMs:Date.now()-t,code:d.f57||code,name:d.f58||'',price:n(d.f43,100),open:n(d.f46,100),high:n(d.f44,100),low:n(d.f45,100),prevClose:n(d.f60,100),volume:n(d.f47),amount:n(d.f48),turnoverRate:n(d.f168,100),pe:n(d.f162,100),pb:n(d.f167,100),totalMarketCap:n(d.f116),circulatingMarketCap:n(d.f117)}}catch(e){lastErr=host+' '+e.message}}const sym=/^(6|688|5|9)/.test(code)?'sh'+code:'sz'+code;try{const u=new URL('https://web.ifzq.gtimg.cn/appstock/app/fqkline/get');u.searchParams.set('param',sym+',day,,,1,qfq');u.searchParams.set('_',String(Date.now()));const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://gu.qq.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(3000)});if(r.ok){const d=await r.json();const a=d?.data?.[sym]?.qt?.[sym]||d?.data?.[sym]?.qt; if(Array.isArray(a)&&a.length>46){const n=(v)=>(v==null||v==='-'||v==='')?null:Number(v);return{source:'tencent-fallback',primaryError:lastErr,fetchedAt:now(),latencyMs:Date.now()-t,code:a[2]||code,name:a[1]||'',price:n(a[3]),open:n(a[5]),high:n(a[33]),low:n(a[34]),prevClose:n(a[4]),volume:n(a[36]),amount:n(a[37])*10000,turnoverRate:n(a[38]),pe:n(a[39]),pb:n(a[46]),totalMarketCap:n(a[45])*100000000,circulatingMarketCap:n(a[44])*100000000}}}}catch(e){lastErr+='; Tencent '+e.message}throw Error(lastErr||'Market data providers unavailable')}
 async function kline(code,limit=120){
  code=String(code||'').trim();
- if(!/^\d{6}$/.test(code)) throw Error('股票代码应为6位数字');
+ if(!/^\\d{6}$/.test(code)) throw Error('股票代码应为6位数字');
  const count=Math.min(500,Math.max(20,Number.isFinite(+limit)?+limit:120));
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
  const safeNum=v=>{if(v===undefined||v===null||v===''||v==='-')return null;const n=Number(v);return Number.isFinite(n)?n:null};
  const withDerivedChanges=rows=>rows.map((row,i)=>({...row,changePct:row.changePct??(i>0&&rows[i-1].close?Number(((row.close/rows[i-1].close-1)*100).toFixed(4)):null)}));
  const quality=rows=>{const n=rows.length||1;return{rowCount:rows.length,amountCoveragePct:Math.round(rows.filter(x=>x.amount!=null).length/n*100),changePctCoveragePct:Math.round(rows.filter(x=>x.changePct!=null).length/n*100),turnoverCoveragePct:Math.round(rows.filter(x=>x.turnover!=null).length/n*100)}};
  const started=Date.now();
- let eastmoneyError='';
- try{
-  const u=new URL('https://push2his.eastmoney.com/api/qt/stock/kline/get');
-  u.searchParams.set('secid',secid(code));
-  u.searchParams.set('fields1','f1,f2,f3,f4,f5,f6');
-  u.searchParams.set('fields2','f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61');
-  u.searchParams.set('klt','101');
-  // Use unadjusted daily prices so historical OHLC and moving averages use a consistent price basis.
-  u.searchParams.set('fqt','0');
-  u.searchParams.set('end','20500101');
-  u.searchParams.set('lmt',String(count));
-  u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');
-  u.searchParams.set('_',String(Date.now()));
-  const r=await fetch(u,{headers,signal:AbortSignal.timeout(3500),cf:{cacheTtl:0,cacheEverything:false}});
-  if(!r.ok) throw Error('Eastmoney HTTP '+r.status);
-  const body=await r.json();
-  const klines=body?.data?.klines||[];
-  const rows=withDerivedChanges(klines.map(item=>{
-   const p=String(item).split(',');
-   return{date:p[0],open:safeNum(p[1]),close:safeNum(p[2]),high:safeNum(p[3]),low:safeNum(p[4]),volume:safeNum(p[5]),amount:safeNum(p[6]),changePct:safeNum(p[8]),turnover:safeNum(p[10])};
-  }).filter(x=>x.date&&x.close!=null));
-  if(!rows.length) throw Error('Eastmoney returned no valid K-line rows');
-  return{source:'eastmoney',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:'none'};
- }catch(e){eastmoneyError=String(e?.message||e)}
- // Tencent fallback: retain fields actually supplied by its K-line payload; derive daily return from adjacent closes when missing.
+ const eastmoneyErrors=[];
+ // Try the delay endpoint first because the same host is currently healthy for quote data.
+ for(const host of ['https://push2delay.eastmoney.com','https://push2his.eastmoney.com']){
+  try{
+   const u=new URL(host+'/api/qt/stock/kline/get');
+   u.searchParams.set('secid',secid(code));
+   u.searchParams.set('fields1','f1,f2,f3,f4,f5,f6');
+   u.searchParams.set('fields2','f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61');
+   u.searchParams.set('klt','101');
+   u.searchParams.set('fqt','0');
+   u.searchParams.set('end','20500101');
+   u.searchParams.set('lmt',String(count));
+   u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');
+   u.searchParams.set('_',String(Date.now()));
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cf:{cacheTtl:0,cacheEverything:false}});
+   if(!r.ok)throw Error('HTTP '+r.status);
+   const body=await r.json();
+   const klines=body?.data?.klines||[];
+   const rows=withDerivedChanges(klines.map(item=>{
+    const p=String(item).split(',');
+    return{date:p[0],open:safeNum(p[1]),close:safeNum(p[2]),high:safeNum(p[3]),low:safeNum(p[4]),volume:safeNum(p[5]),amount:safeNum(p[6]),changePct:safeNum(p[8]),turnover:safeNum(p[10])};
+   }).filter(x=>x.date&&x.close!=null));
+   if(!rows.length)throw Error('returned no valid K-line rows');
+   return{source:host.includes('push2delay')?'eastmoney-delay-kline':'eastmoney-kline',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:'none',...(host.includes('push2delay')?{warning:'使用东方财富延迟行情 K 线源'}:{})};
+  }catch(e){eastmoneyErrors.push(host+': '+String(e?.message||e))}
+ }
+ const eastmoneyError=eastmoneyErrors.join('；');
+ // Tencent's endpoint expects an explicit adjustment mode; a trailing empty parameter can return HTTP 501.
  try{
   const sym=/^(6|688|5|9)/.test(code)?'sh'+code:'sz'+code;
   const u=new URL('https://web.ifzq.gtimg.cn/appstock/app/fqkline/get');
-  u.searchParams.set('param',sym+',day,,,'+count+',');
+  u.searchParams.set('param',sym+',day,,,'+count+',qfq');
   u.searchParams.set('_',String(Date.now()));
-  const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://gu.qq.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(3500)});
-  if(!r.ok) throw Error('Tencent HTTP '+r.status);
+  const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://gu.qq.com/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(4500)});
+  if(!r.ok)throw Error('Tencent HTTP '+r.status);
   const body=await r.json();
   const node=body?.data?.[sym];
-  const arr=node?.day||node?.qfqday||node?.hfqday||[];
+  const arr=node?.qfqday||node?.day||[];
   const raw=arr.map(p=>({date:p[0],open:safeNum(p[1]),close:safeNum(p[2]),high:safeNum(p[3]),low:safeNum(p[4]),volume:safeNum(p[5]),amount:safeNum(p[6]),changePct:null,turnover:safeNum(p[7])})).filter(x=>x.date&&x.close!=null);
   const rows=withDerivedChanges(raw);
-  if(!rows.length) throw Error('Tencent returned no valid K-line rows');
-  return{source:'tencent-fallback',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:node?.day?'none':'unknown',warning:'东方财富K线不可用，已切换腾讯备用源；腾讯未提供的字段保持为空。',primaryError:eastmoneyError};
+  if(!rows.length)throw Error('Tencent returned no valid K-line rows');
+  return{source:'tencent-kline-fallback',fetchedAt:now(),latencyMs:Date.now()-started,rows,quality:quality(rows),adjustment:node?.qfqday?'qfq':'unknown',warning:'东方财富 K 线源不可用，已切换腾讯备用源；腾讯未提供的字段保持为空。',primaryError:eastmoneyError};
  }catch(e){throw Error('K线数据源均不可用。东方财富：'+eastmoneyError+'；腾讯：'+String(e?.message||e))}
 }
 async function health(db,source,status,detail,latency){if(db)await db.prepare('INSERT INTO data_health(source,status,latency_ms,checked_at,detail) VALUES(?,?,?,?,?) ON CONFLICT(source) DO UPDATE SET status=excluded.status,latency_ms=excluded.latency_ms,checked_at=excluded.checked_at,detail=excluded.detail').bind(source,status,latency||null,now(),detail||'').run()}
