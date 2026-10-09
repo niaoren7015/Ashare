@@ -294,7 +294,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   const content=await callAI(cfg,[
    {role:'system',content:'你是严谨的A股量化研究与风险控制团队。报告必须紧凑：总长度不超过约1800个汉字，每只股票不超过450字，避免长篇泛论。只根据输入数据，不得编造公司、行业归属、财报、资金流、新闻、价格或技术指标。最终必须给出恰好3只股票，按建仓观察优先级1-3排序；如果数据不足以支持三只合格标的，明确标注“观察名单/暂不建仓”，不得为凑数虚构确定性。每只必须分项说明：所属板块（只有有证据时才写；否则写待核实）、题材催化和新闻证据及关联程度、板块资金趋势（缺失则明确）、个股近5个交易日主力净流入/流出（优先使用资金流历史接口，必须给出日期和合计；接口失败则明确未知）及来源、估值与基本面（区分可验证数据与缺失项）、未过度炒作证据、量价/均线/近20日区间和回撤、主要风险、建仓优先级。建仓操作必须给出基于现价和真实日K支撑/均线的条件式区间：首笔观察仓、回踩加仓条件、突破跟随条件、失效/止损条件；若K线或支撑数据缺失，不得编造具体价格，改用等待数据的条件。优先寻找正向资金、板块资金改善、基本面支撑、低拥挤且估值有安全边际的个股；若输入无法证明其中某项，要把它列为未验证而非给高分。明确避免追高，不能承诺收益。开头先总结市场环境和风险偏好，再列出三只股票，结尾列出本轮筛选数据缺口与下一步核验清单。'},
    {role:'user',content:JSON.stringify(compactPayload)}
-  ],40000,1800);
+  ],70000,1600);
   stage='保存选股报告';
   const created=now();
   await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(null,'ai_screen',JSON.stringify({model:cfg.ai_model,content,results:good,market,generatedAt:created,selectionMethod:payload.selectionMethod,limitations:payload.limitations}),created).run();
