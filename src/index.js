@@ -16,16 +16,16 @@ async function cachedData(db,key,ttlMs,producer){
  if(!db)return producer();
  let cached=null;
  try{const row=await db.prepare('SELECT payload,expires_at,updated_at FROM data_cache WHERE cache_key=?').bind(key).first();if(row){try{cached={data:JSON.parse(row.payload),expiresAt:Number(row.expires_at)||0,updatedAt:row.updated_at}}catch{cached=null}}}catch{}
- if(cached&&cached.expiresAt>Date.now())return {...cached.data,cache:{status:'hit',updatedAt:cached.updatedAt,expiresAt:new Date(cached.expiresAt).toISOString()}};
+ if(cached&&cached.expiresAt>Date.now())return Array.isArray(cached.data)?cached.data:{...cached.data,cache:{status:'hit',updatedAt:cached.updatedAt,expiresAt:new Date(cached.expiresAt).toISOString()}};
  let data;
  try{data=await producer()}catch(e){
-  if(cached?.data)return {...cached.data,cache:{status:'stale-fallback',updatedAt:cached.updatedAt,expiresAt:new Date(cached.expiresAt).toISOString(),warning:String(e?.message||e)}};
+  if(cached?.data)return Array.isArray(cached.data)?cached.data:{...cached.data,cache:{status:'stale-fallback',updatedAt:cached.updatedAt,expiresAt:new Date(cached.expiresAt).toISOString(),warning:String(e?.message||e)}};
   throw e;
  }
  const updatedAt=now(),expiresAt=Date.now()+ttlMs;
  try{await db.prepare('INSERT INTO data_cache(cache_key,payload,updated_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at,expires_at=excluded.expires_at').bind(key,JSON.stringify(data),updatedAt,expiresAt).run()}
  catch(e){return {...data,cache:{status:'bypass',updatedAt,warning:'缓存写入失败：'+String(e?.message||e)}}}
- return {...data,cache:{status:'miss',updatedAt,expiresAt:new Date(expiresAt).toISOString()}};
+ return Array.isArray(data)?data:{...data,cache:{status:'miss',updatedAt,expiresAt:new Date(expiresAt).toISOString()}};
 }
 async function quote(code){
  code=String(code||'').trim();if(!/^\d{6}$/.test(code))throw Error('股票代码应为6位数字');
@@ -265,6 +265,8 @@ async function fetchMarketNews(category='domestic'){
   if(!intl&&foreign)continue;
   const key=x.url||x.title;if(key&&!seen.has(key)){seen.add(key);rows.push({...x,category:intl?'国际财经':'国内/A股财经',relevance:intl?'国际市场背景':'A股/国内市场资讯；仍需逐条判断与个股的关联'})}
  }
+ const timeMs=v=>{if(v==null||v==='')return 0;const n=Number(v);if(Number.isFinite(n)&&n>1000000000)return n<100000000000?n*1000:n;const t=Date.parse(v);return Number.isFinite(t)?t:0};
+ rows.sort((a,b)=>timeMs(b.publishedAt)-timeMs(a.publishedAt));
  if(!rows.length)throw Error('新闻源均未返回有效新闻：'+results.map(x=>x.error).filter(Boolean).join('；'));
  return{source:results.filter(x=>x.rows.length).map(x=>x.rows[0].source).join('+'),category:intl?'international':'domestic',fetchedAt:now(),rows:rows.slice(0,40),sourceChecks:results.map((x,i)=>({source:i?'eastmoney':'sina',validRows:x.rows.length,error:x.error}))};
 }
