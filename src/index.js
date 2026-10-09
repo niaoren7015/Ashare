@@ -188,6 +188,57 @@ async function morning(db){if(!db)return{ok:false,reason:'DB not bound'};const h
 async function getAIConfig(db){const rows=await db.prepare("SELECT key,value FROM app_settings WHERE key IN ('ai_endpoint','ai_api_key','ai_model')").run();const cfg={};for(const x of rows.results||[]){try{cfg[x.key]=JSON.parse(x.value)}catch{cfg[x.key]=x.value}}return cfg}
 function completionURL(endpoint){const u=new URL(String(endpoint||'').trim());if(u.protocol!=='https:')throw Error('AI Endpoint 必须使用 HTTPS');u.hash='';let path=u.pathname;while(path.length>1&&path.endsWith('/'))path=path.slice(0,-1);if(path.toLowerCase().endsWith('/chat/completions')){u.pathname=path;return u.toString()}if(path==='/'||path===''){u.pathname='/chat/completions';return u.toString()}if(path.toLowerCase().endsWith('/v1')){u.pathname=path+'/chat/completions';return u.toString()}u.pathname=path+'/chat/completions';return u.toString()}
 async function callAI(cfg,messages,timeout=30000,maxTokens=null){const endpoint=completionURL(cfg.ai_endpoint);const body={model:cfg.ai_model,temperature:0.2,stream:false,messages,thinking:{type:'disabled'}};if(Number.isFinite(maxTokens)&&maxTokens>0)body.max_tokens=maxTokens;let r;try{r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+cfg.ai_api_key},body:JSON.stringify(body),signal:AbortSignal.timeout(timeout)})}catch(e){if(e?.name==='TimeoutError'||e?.name==='AbortError'||String(e?.message||e).toLowerCase().includes('timeout'))throw Error('AI接口请求超时（等待 '+Math.round(timeout/1000)+' 秒）。已限制选股报告长度；请检查模型服务商响应速度/限流。');throw e}const raw=await r.text();if(!r.ok)throw Error('AI 服务返回 HTTP '+r.status+'（请求地址：'+endpoint+'）'+(raw?'：'+raw.slice(0,400):'；请检查 Endpoint 和模型权限'));let out;try{out=JSON.parse(raw)}catch{throw Error('AI 服务返回的不是有效 JSON：'+raw.slice(0,200))}const choice=out.choices?.[0]||out.output?.[0]||null;const msg=choice?.message||choice?.delta||choice;let content=msg?.content??out.output_text??out.response?.output_text??null;if(Array.isArray(content))content=content.map(x=>typeof x==='string'?x:(x?.text||x?.content||'')).filter(Boolean).join('\\n');if(content&&typeof content==='object')content=content.text||content.content||'';if(typeof content==='string'&&content.trim())return content.trim();const diag={responseKeys:Object.keys(out||{}).slice(0,12),choiceKeys:Object.keys(choice||{}).slice(0,12),messageKeys:Object.keys(msg||{}).slice(0,12),finishReason:choice?.finish_reason||choice?.finishReason||null,completionTokens:out.usage?.completion_tokens??out.usage?.output_tokens??null,reasoningTokens:out.usage?.completion_tokens_details?.reasoning_tokens??null,refusal:msg?.refusal||null,providerMessage:out.error?.message||out.message||null,rawPreview:JSON.stringify(out).slice(0,260)};throw Error('AI 服务已返回 HTTP '+r.status+'，但响应中没有可展示的正文。诊断：'+JSON.stringify(diag))}
+
+async function streamAIResponse(cfg,messages,onDone){
+ const endpoint=completionURL(cfg.ai_endpoint);
+ const headers={'content-type':'application/json','authorization':'Bearer '+cfg.ai_api_key};
+ const body={model:cfg.ai_model,temperature:0.2,stream:true,messages,thinking:{type:'disabled'}};
+ const enc=new TextEncoder();
+ let streamController;
+ const responseStream=new ReadableStream({start(controller){streamController=controller}});
+ const send=(obj)=>{try{streamController.enqueue(enc.encode('data: '+JSON.stringify(obj)+'\n\n'))}catch{}};
+ (async()=>{
+  let content='';
+  try{
+   const upstream=await fetch(endpoint,{method:'POST',headers,body:JSON.stringify(body),signal:AbortSignal.timeout(65000)});
+   if(!upstream.ok){
+    const raw=(await upstream.text()).slice(0,500);
+    throw Error('AI 流式接口返回 HTTP '+upstream.status+'：'+raw);
+   }
+   if(!upstream.body)throw Error('AI 服务未返回可读取的流');
+   send({type:'meta',model:cfg.ai_model});
+   const reader=upstream.body.getReader(),decoder=new TextDecoder();
+   let buffer='';
+   const emitLine=line=>{
+    const trimmed=line.trim();
+    if(!trimmed.startsWith('data:'))return;
+    const data=trimmed.slice(5).trim();
+    if(!data||data==='[DONE]')return;
+    let obj;try{obj=JSON.parse(data)}catch{return}
+    const choice=obj.choices?.[0]||obj.output?.[0]||{};
+    const delta=choice.delta||choice.message||choice;
+    let part=delta.content??obj.output_text??obj.response?.output_text??'';
+    if(Array.isArray(part))part=part.map(x=>typeof x==='string'?x:(x?.text||x?.content||'')).join('');
+    if(part&&typeof part==='object')part=part.text||part.content||'';
+    if(typeof part==='string'&&part){content+=part;send({type:'delta',text:part})}
+   };
+   while(true){
+    const {value,done}=await reader.read();if(done)break;
+    buffer+=decoder.decode(value,{stream:true}).replace(/\r\n/g,'\n');
+    const lines=buffer.split('\n');buffer=lines.pop()||'';
+    for(const line of lines)emitLine(line);
+   }
+   if(buffer)emitLine(buffer);
+   if(!content.trim())throw Error('AI 流式响应未包含可展示的正文；请确认 Endpoint 支持 OpenAI 兼容 SSE stream');
+   const generatedAt=now();
+   try{await onDone?.({content,generatedAt})}catch(e){send({type:'warning',message:'正文已生成，但报告保存失败：'+String(e?.message||e)})}
+   send({type:'done',generatedAt,model:cfg.ai_model});
+  }catch(e){send({type:'error',message:String(e?.message||e)})}
+  try{streamController.close()}catch{}
+ })();
+ return new Response(responseStream,{headers:{'content-type':'text/event-stream; charset=utf-8','cache-control':'no-cache, no-transform','connection':'keep-alive','x-accel-buffering':'no'}});
+}
+
 async function quoteIndex(code){
  const started=Date.now(),errors=[],headers={'user-agent':'Mozilla/5.0','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
  const sec=(code==='000001'?'1.':'0.')+code;
@@ -572,9 +623,9 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   ]);
   const relatedNews=stockNewsResult.data?.rows||[];
   const [boardsResult,industryResult,conceptResult,cninfoResult]=await Promise.all([
-   fetchStockBoards(code).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e.message||e)})),
-   fetchSectorFlowRanks('industry').then(data=>({data,error:null})).catch(e=>({data:[],error:String(e.message||e)})),
-   fetchSectorFlowRanks('concept').then(data=>({data,error:null})).catch(e=>({data:[],error:String(e.message||e)})),
+   cachedData(db,'stock-boards:'+code,300000,()=>fetchStockBoards(code)).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e.message||e)})),
+   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry')).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e.message||e)})),
+   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept')).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e.message||e)})),
    fetchCninfoAnnouncements(code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
   ]);
   const sectorMap=new Map([...industryResult.data,...conceptResult.data].map(x=>[x.code,x]));
@@ -593,18 +644,20 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
     quote:!!q,validDailyBars:rows.length,hasAtLeast20DailyBars:rows.length>=20,
     amountCoveragePct:k?.quality?.amountCoveragePct??null,
     financialSnapshot:!!financeResult.data?.rows?.length,
-    fundFlowHistory:!!flowResult.data?.rows?.length,
+    fundFlowHistory:!!(flowResult.data?.rows?.some(x=>Number.isFinite(x.mainNetInflow))),
     officialAnnouncements:!!cninfoResult.data?.rows?.length,
     relatedNewsCount:relatedNews.length,
     boardCount:boards.length,
-    sourceAudit:{quote:{status:'validated',source:q.source,checkedAt:q.fetchedAt||now()},dailyKline:{status:rows.length>=20?'validated':rows.length?'partial':'unavailable',source:k?.source||null,validRows:rows.length,asOfDate:rows.at(-1)?.date||null,error:kResult.error||null,quality:k?.quality||null},financial:{status:financeResult.data?.rows?.length?'validated':'unavailable',source:financeResult.data?.source||null,rows:financeResult.data?.rows?.length||0,error:financeResult.error||null},stockFlow:{status:flowResult.data?.rows?.length?'validated':'unavailable',source:flowResult.data?.source||null,period:flowResult.data?.period||null,historyDays:flowResult.data?.historyDays||0,error:flowResult.error||null},announcements:{status:cninfoResult.data?.rows?.length?'validated':'unavailable',source:cninfoResult.data?.source||null,rows:cninfoResult.data?.rows?.length||0,error:cninfoResult.error||null},sectorMembership:{status:boards.length?'partial':'unavailable',rows:boards.length,error:boardsResult.error||null},news:{status:relatedNews.length?'validated':(stockNewsResult.error?'unavailable':'empty'),source:stockNewsResult.data?.source||null,matchedCount:relatedNews.length,error:stockNewsResult.error||null,policy:'个股资讯来自按证券代码查询的东方财富接口；公告单独列示，不用泛财经资讯替代个股新闻'},marketNews:{status:(marketNewsResult.data?.rows||[]).length?'validated':'unavailable',source:marketNewsResult.data?.source||null,matchedCount:(marketNewsResult.data?.rows||[]).length,error:marketNewsResult.error||null}},
+    sourceAudit:{quote:{status:'validated',source:q.source,checkedAt:q.fetchedAt||now()},dailyKline:{status:rows.length>=20?'validated':rows.length?'partial':'unavailable',source:k?.source||null,validRows:rows.length,asOfDate:rows.at(-1)?.date||null,error:kResult.error||null,quality:k?.quality||null},financial:{status:financeResult.data?.rows?.length?'validated':'unavailable',source:financeResult.data?.source||null,rows:financeResult.data?.rows?.length||0,error:financeResult.error||null},stockFlow:{status:flowResult.data?.rows?.some(x=>Number.isFinite(x.mainNetInflow))?'validated':'unavailable',source:flowResult.data?.source||null,host:flowResult.data?.host||null,period:flowResult.data?.period||null,historyDays:flowResult.data?.historyDays||0,latestDate:flowResult.data?.latest?.date||null,mainNetInflow:flowResult.data?.latest?.mainNetInflow??null,error:flowResult.error||null},announcements:{status:cninfoResult.data?.rows?.length?'validated':'unavailable',source:cninfoResult.data?.source||null,rows:cninfoResult.data?.rows?.length||0,error:cninfoResult.error||null},sectorMembership:{status:boards.length?'partial':'unavailable',rows:boards.length,error:boardsResult.error||null},news:{status:relatedNews.length?'validated':(stockNewsResult.error?'unavailable':'empty'),source:stockNewsResult.data?.source||null,matchedCount:relatedNews.length,error:stockNewsResult.error||null,policy:'个股资讯来自按证券代码查询的东方财富接口；公告单独列示，不用泛财经资讯替代个股新闻'},marketNews:{status:(marketNewsResult.data?.rows||[]).length?'validated':'unavailable',source:marketNewsResult.data?.source||null,matchedCount:(marketNewsResult.data?.rows||[]).length,error:marketNewsResult.error||null}},
     missing:[...(kResult.error?['日K线抓取失败']:[]),...(rows.length<20?['有效日K不足20根']:[]),...(financeResult.error?['财务摘要缺失']:[]),...(flowResult.error?['个股资金流缺失']:[]),...(cninfoResult.error?['官方公告抓取失败']:[]),...(boardsResult.error?['行业/概念归属抓取失败']:[]),...(stockNewsResult.error?['个股相关新闻抓取失败：'+stockNewsResult.error]:[]),...(marketNewsResult.error?['泛财经新闻抓取失败：'+marketNewsResult.error]:[])]
    }
   };
-  const content=await callAI(cfg,[
+  const messages=[
    {role:'system',content:'你是严谨的A股短线量化研究与风险控制分析师。只能依据输入数据，不得把缺失值当作0/正常，不得编造新闻、公告、行业、财务、资金流、机构持仓、龙虎榜、股东变化、质押或支撑位。先分清已核验事实、来源线索、量化推断和缺失项。报告按此结构输出：1）交易结论与信号强度（偏强观察/中性等待/偏弱回避，不得把分数写成胜率）；2）短线量化因子面板：趋势MA5/10/20/60与MA20斜率、5/10/20日收益、20日高低点及距高点回撤、量比（只有成交量覆盖充分才可用）、RSI14、ATR14及ATR比例、因子覆盖率与综合分；解释各因子冲突，不能只凭单因子下结论；3）行业/题材与催化（必须有个股相关证据，泛市场新闻只可作为大盘背景）；4）资金流（注明来源、单位、日期/期间；日期不明的快照不得称今日流入，接口失败不得解读为资金中性）；5）财务与估值（注明报告期和原始字段，缺字段就不推断安全边际；亏损原因仅引用财报/公告明确披露）；6）官方公告和新闻（公告标题不是公告全文，提供原文链接）；7）条件式交易计划（观察触发、回踩确认、突破确认、失效条件、仓位与止损逻辑；具体价格只可来自真实K线/均线/区间，不可编造；若数据不足则只给条件不给价格）；8）风险清单；9）数据来源与逐项状态。短线因子是研究信号而非收益保证；结合A股短期反转、动量状态依赖、流动性和波动风险，不得假定任何因子恒定有效。明确不承诺收益。'},
    {role:'user',content:'请分析A股个股 '+code+'。以下是后端实际抓取数据；null/空数组表示缺失，不得补猜。'+JSON.stringify({generatedAt:now(),analysis:a,financialSnapshot:a.financialSnapshot,financialError:a.financialError,fundFlow:a.fundFlow,fundFlowError:a.fundFlowError,sectorContext:a.sectorContext,officialAnnouncements:a.officialAnnouncements,officialAnnouncementsError:a.officialAnnouncementsError,relatedNews:a.relatedNews,recentMarketNews:a.recentMarketNews,newsFetchError:a.newsFetchError,sourceAudit:a.dataCompleteness.sourceAudit,importantDataPolicy:'当前没有接入可验证的机构持仓、龙虎榜明细、股东增减持/质押结构化历史；不要声称已查到。请把巨潮公告标题作为待核验线索，不要当作公告全文。'} )}
-  ],65000,5000);
+  ];
+  if(b.stream===true)return streamAIResponse(cfg,messages,async({content,generatedAt})=>{await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(code,'ai_analysis',JSON.stringify({model:cfg.ai_model,content,generatedAt,source:a}),generatedAt).run()});
+  const content=await callAI(cfg,messages,65000,5000);
   const created=now();
   await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(code,'ai_analysis',JSON.stringify({model:cfg.ai_model,content,generatedAt:created,source:a}),created).run();
   return json({ok:true,code,model:cfg.ai_model,generatedAt:created,content,ruleAnalysis:a,elapsedMs:Date.now()-started});
