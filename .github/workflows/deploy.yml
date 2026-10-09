@@ -32,3 +32,15 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: f21c21b5aa07452a54e78efb2002ca3a
+      - name: Smoke test deployed Worker health endpoint
+        run: |
+          set -e
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --silent --show-error "$WORKER_URL/api/health" -o /tmp/worker-health.json; then
+              break
+            fi
+            sleep 2
+          done
+          node -e "const fs=require('fs');const x=JSON.parse(fs.readFileSync('/tmp/worker-health.json','utf8'));if(x.ok!==true||x.db!==true)process.exit(1);console.log('Worker health smoke test passed:',JSON.stringify({ok:x.ok,db:x.db,version:x.version,time:x.time}))"
+        env:
+          WORKER_URL: https://a-share-ai-tracker.parker-f21.workers.dev
