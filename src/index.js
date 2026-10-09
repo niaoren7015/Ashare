@@ -265,13 +265,33 @@ async function fetchMarketNews(category='domestic'){
  return{source:results.filter(x=>x.rows.length).map(x=>x.rows[0].source).join('+'),category:intl?'international':'domestic',fetchedAt:now(),rows:rows.slice(0,40),sourceChecks:results.map((x,i)=>({source:i?'eastmoney':'sina',validRows:x.rows.length,error:x.error}))};
 }
 async function fetchEastmoneyStockNews(code){
- const id=secid(code),form=new URLSearchParams({codes:id});
- const r=await fetch('https://quote.eastmoney.com/zixuan/api/infomines',{method:'POST',headers:{'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64)','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*','content-type':'application/x-www-form-urlencoded; charset=UTF-8'},body:form.toString(),signal:AbortSignal.timeout(5000),cache:'no-store'});
- if(!r.ok)throw Error('东方财富个股资讯 HTTP '+r.status);
- const body=await r.json(),node=body?.result?.[id]||body?.result?.[code]||body?.data?.[id]||body?.data?.[code],arr=Array.isArray(node)?node:(Array.isArray(node?.data)?node.data:(Array.isArray(node?.list)?node.list:[]));
- const rows=arr.map(x=>({title:String(x.title||x.Title||x.newsTitle||x.name||'').trim(),summary:String(x.summary||x.content||x.digest||x.intro||'').trim(),url:String(x.url||x.Url||x.newsUrl||x.articleUrl||'').replace(/\\/g,''),publishedAt:x.date||x.showTime||x.publishTime||x.time||x.ctime||null,source:'eastmoney-stock-news',code})).filter(x=>x.title&&/^https?:\/\//i.test(x.url));
- if(!rows.length)throw Error('东方财富个股资讯无有效记录；响应字段 '+Object.keys(body||{}).join(',')+'；result keys '+Object.keys(body?.result||{}).slice(0,5).join(','));
- return{source:'eastmoney-stock-news',fetchedAt:now(),code,rows:rows.slice(0,20)};
+ const errors=[],headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
+ const parseRows=(body,source)=>{
+  const id=secid(code),root=body?.data??body?.result??body;
+  let arr=Array.isArray(root)?root:(Array.isArray(root?.list)?root.list:(Array.isArray(root?.data)?root.data:(Array.isArray(root?.items)?root.items:(Array.isArray(root?.newsList)?root.newsList:[]))));
+  if(!arr.length&&body?.result?.[id]){const n=body.result[id];arr=Array.isArray(n)?n:(n.data||n.list||[])}
+  const rows=arr.map(x=>({title:String(x.title||x.Title||x.newsTitle||x.name||x.news_title||'').trim(),summary:String(x.summary||x.content||x.digest||x.intro||x.newsContent||'').trim(),url:String(x.url||x.Url||x.newsUrl||x.articleUrl||x.news_url||'').replace(/\\/g,''),publishedAt:x.date||x.showTime||x.publishTime||x.time||x.ctime||x.publish_date||null,source,code})).filter(x=>x.title&&/^https?:\/\//i.test(x.url));
+  if(!rows.length)throw Error(source+'响应没有通过标题+原文链接校验的记录；顶层字段 '+Object.keys(body||{}).join(','));
+  return rows.slice(0,20);
+ };
+ try{
+  const u=new URL('https://np-listapi.eastmoney.com/comm/web/getNewsByCode');
+  for(const [k,v] of Object.entries({client:'web',biz:'web_news_col',code:String(code),pageSize:'20',page:'1',req_trace:String(Date.now())}))u.searchParams.set(k,v);
+  const r=await fetch(u,{headers,signal:AbortSignal.timeout(5000),cache:'no-store'});
+  if(!r.ok)throw Error('HTTP '+r.status);
+  const body=await r.json(),rows=parseRows(body,'eastmoney-stock-news-by-code');
+  return{source:'eastmoney-stock-news-by-code',fetchedAt:now(),code,rows};
+ }catch(e){errors.push('getNewsByCode: '+String(e?.message||e))}
+ try{
+  const id=secid(code),form=new URLSearchParams({codes:id});
+  const r=await fetch('https://quote.eastmoney.com/zixuan/api/infomines',{method:'POST',headers:{...headers,'content-type':'application/x-www-form-urlencoded; charset=UTF-8'},body:form.toString(),signal:AbortSignal.timeout(5000),cache:'no-store'});
+  if(!r.ok)throw Error('HTTP '+r.status);
+  const body=await r.json(),node=body?.result?.[id]||body?.result?.[code]||body?.data?.[id]||body?.data?.[code],arr=Array.isArray(node)?node:(Array.isArray(node?.data)?node.data:(Array.isArray(node?.list)?node.list:[]));
+  const rows=arr.map(x=>({title:String(x.title||x.Title||x.newsTitle||x.name||'').trim(),summary:String(x.summary||x.content||x.digest||x.intro||'').trim(),url:String(x.url||x.Url||x.newsUrl||x.articleUrl||'').replace(/\\/g,''),publishedAt:x.date||x.showTime||x.publishTime||x.time||x.ctime||null,source:'eastmoney-stock-news-infomines',code})).filter(x=>x.title&&/^https?:\/\//i.test(x.url));
+  if(!rows.length)throw Error('infomines无有效新闻记录');
+  return{source:'eastmoney-stock-news-infomines',fetchedAt:now(),code,rows:rows.slice(0,20),primaryError:errors.join('；')};
+ }catch(e){errors.push('infomines: '+String(e?.message||e))}
+ throw Error('东方财富个股新闻接口均未通过有效性校验：'+errors.join('；'));
 }
 async function fetchScreenCandidates(){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
@@ -664,7 +684,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   const payload={
    generatedAt:now(),elapsedMs:Date.now()-started,marketIndices:market,marketLiquidity:liquidityResult,
    marketNews:newsResult.items.slice(0,12),newsFetchError:newsResult.error,
-   selectionMethod:candidates.some(c=>Number.isFinite(c.flow))?'资金流字段可用时优先核验 + 估值字段可用性 + 涨幅不过热 + 日K趋势/回撤复核':'当前仅能按成交额/涨幅/可用估值字段及日K趋势/回撤筛选；资金流、板块归属与市场催化均未验证，不属于资金流选股',
+   selectionMethod:candidates.some(c=>Number.isFinite(c.flow))?'资金流字段可用时优先核验 + 估值字段可用性 + 涨幅不过热 + 日K趋势/回撤复核':'资金流可用时优先核验资金流，结合估值、涨幅、日K趋势/回撤筛选；每只候选仍需查看板块、新闻与资金流的实际覆盖情况',
    candidates:good.map(x=>({
     stock:{code:x.code,name:x.name,price:x.analysis.quote.price,changePct:x.changePct,amount:x.amount,turnover:x.turnover,pe:x.analysis.quote.pe??x.pe,pb:x.analysis.quote.pb??null,flow:x.flow,flowSource:x.analysis.fundFlowHistory?.source||x.rankSource,flowHistory:x.analysis.fundFlowHistory,flowHistoryError:x.analysis.flowHistoryError,flowPeriod:x.analysis.fundFlowHistory?.period||null,financialSnapshot:x.analysis.financialSnapshot||null,financialSnapshotError:x.analysis.financialSnapshotError||null,preScore:x.preScore},
     technical:x.analysis.indicators,klineSource:x.analysis.klineSource,klineError:x.analysis.klineError,
