@@ -260,7 +260,8 @@ async function fetchStockFlowHistory(code){
 async function fetchFinancialSnapshot(code){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const market=/^(6|9)/.test(String(code))?'SH':'SZ',secucode=code+'.'+market;
- const mapRows=rows=>rows.map(x=>({reportDate:x.REPORT_DATE||x.REPORTDATE||x.QDATE||x.REPORT_DATE_NAME||null,noticeDate:x.NOTICE_DATE||x.NOTICEDATE||null,eps:x.BASIC_EPS??x.EPSJB??null,roe:x.WEIGHTAVG_ROE??x.ROEJQ??null,revenue:x.TOTAL_OPERATE_INCOME??x.TOTALOPERATEREVE??x.TOTAL_OPERATE_INCOME??null,revenueGrowthPct:x.TOTAL_OPERATE_INCOME_YOY??x.TOTALOPERATEREVETZ??x.YSTZ??null,netProfit:x.PARENT_NETPROFIT??x.PARENTNETPROFIT??x.NETPROFIT??null,netProfitGrowthPct:x.PARENT_NETPROFITTZ??x.PARENTNETPROFITTZ??x.SJLTZ??null,operatingCashFlowPerShare:x.MGJYXJJE??x.MGJYXJJE??null,debtAssetRatioPct:x.DEBT_ASSET_RATIO??x.ZCFZL??null,grossMarginPct:x.XSMLL??x.SALES_GROSS_PROFIT_RATIO??null}));
+ const val=(...values)=>{for(const v of values)if(v!==undefined&&v!==null&&String(v).trim()!==''&&Number.isFinite(Number(v)))return Number(v);return null};
+ const mapRows=rows=>rows.map(x=>({reportDate:x.REPORT_DATE||x.REPORTDATE||x.QDATE||x.REPORT_DATE_NAME||null,noticeDate:x.NOTICE_DATE||x.NOTICEDATE||null,eps:val(x.BASIC_EPS,x.EPSJB),roe:val(x.WEIGHTAVG_ROE,x.ROEJQ),revenue:val(x.TOTAL_OPERATE_INCOME,x.TOTALOPERATEREVE),revenueGrowthPct:val(x.TOTAL_OPERATE_INCOME_YOY,x.TOTALOPERATEREVETZ,x.YSTZ),netProfit:val(x.PARENT_NETPROFIT,x.PARENTNETPROFIT,x.NETPROFIT),netProfitGrowthPct:val(x.PARENT_NETPROFITTZ,x.PARENTNETPROFITTZ,x.SJLTZ),operatingCashFlowPerShare:val(x.MGJYXJJE,x.NETCASH_OPERATE_PER_SHARE),debtAssetRatioPct:val(x.DEBT_ASSET_RATIO,x.ZCFZL),grossMarginPct:val(x.XSMLL,x.SALES_GROSS_PROFIT_RATIO)}));
  const attempts=[
   {url:'https://datacenter-web.eastmoney.com/api/data/v1/get',params:{reportName:'RPT_LICO_FN_CPD',columns:'ALL',filter:'(SECURITY_CODE="'+code+'")',pageNumber:'1',pageSize:'5',sortColumns:'REPORTDATE',sortTypes:'-1',source:'WEB',client:'WEB'}},
   {url:'https://datacenter.eastmoney.com/securities/api/data/v1/get',params:{reportName:'RPT_F10_FINANCE_MAINFINADATA',columns:'ALL',filter:'(SECUCODE="'+secucode+'")',pageNumber:'1',pageSize:'5',sortColumns:'REPORT_DATE',sortTypes:'-1',source:'HSF10',client:'PC'}}
@@ -326,12 +327,12 @@ function computeShortTermFactors(rows,quoteData,klineQuality){
  const last=bars.at(-1)||null,avg=(key,n,end=bars.length)=>{const a=bars.slice(Math.max(0,end-n),end).map(x=>x[key]).filter(v=>Number.isFinite(v));return a.length===n?a.reduce((sum,v)=>sum+v,0)/n:null};
  const ret=n=>bars.length>n&&bars[bars.length-n-1]?.close>0&&last?Number(((last.close/bars[bars.length-n-1].close-1)*100).toFixed(2)):null;
  const ma5=avg('close',5),ma10=avg('close',10),ma20=avg('close',20),ma60=avg('close',60),ma20Prev=avg('close',20,Math.max(0,bars.length-5));
- const recent20=bars.slice(-20),recent14=bars.slice(-14),high20=recent20.length?Math.max(...recent20.map(x=>x.high)):null,low20=recent20.length?Math.min(...recent20.map(x=>x.low)):null;
+ const recent20=bars.slice(-20),recent15=bars.slice(-15),high20=recent20.length?Math.max(...recent20.map(x=>x.high)):null,low20=recent20.length?Math.min(...recent20.map(x=>x.low)):null;
  const distanceHighPct=last&&high20>0?Number(((last.close/high20-1)*100).toFixed(2)):null,distanceLowPct=last&&low20>0?Number(((last.close/low20-1)*100).toFixed(2)):null;
  const vol20=bars.slice(-20).filter(x=>Number.isFinite(x.volume)&&x.volume>0),vol5=bars.slice(-5).filter(x=>Number.isFinite(x.volume)&&x.volume>0);
  const volumeCoverage20Pct=recent20.length?Math.round(vol20.length/recent20.length*100):0,volumeRatio=vol20.length>=16&&vol5.length===5&&vol20.reduce((a,x)=>a+x.volume,0)>0?Number(((vol5.reduce((a,x)=>a+x.volume,0)/5)/(vol20.reduce((a,x)=>a+x.volume,0)/vol20.length)).toFixed(2)):null;
- const changes=recent14.slice(1).map((x,i)=>({gain:Math.max(0,x.close-recent14[i].close),loss:Math.max(0,recent14[i].close-x.close)}));
- const gains=changes.reduce((a,x)=>a+x.gain,0),losses=changes.reduce((a,x)=>a+x.loss,0),rsi14=changes.length===13?Number((losses===0?100:100-100/(1+(gains/13)/(losses/13))).toFixed(1)):null;
+ const changes=recent15.slice(1).map((x,i)=>({gain:Math.max(0,x.close-recent14[i].close),loss:Math.max(0,recent14[i].close-x.close)}));
+ const gains=changes.reduce((a,x)=>a+x.gain,0),losses=changes.reduce((a,x)=>a+x.loss,0),rsi14=changes.length===14?Number((losses===0?100:100-100/(1+(gains/14)/(losses/14))).toFixed(1)):null;
  const tr=bars.slice(-14).map((x,i)=>{const prev=bars[bars.length-14+i-1]?.close;return Math.max(x.high-x.low,prev==null?0:Math.abs(x.high-prev),prev==null?0:Math.abs(x.low-prev))});
  const atr14=tr.length===14?tr.reduce((a,v)=>a+v,0)/14:null,atrPct=atr14&&last?Number((atr14/last.close*100).toFixed(2)):null;
  const return5dPct=ret(5),return10dPct=ret(10),return20dPct=ret(20);
