@@ -573,12 +573,16 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  try{
   if(category==='stock'){
    if(!/^\d{6}$/.test(code))return json({ok:false,error:'个股新闻需要6位股票代码'},400);
-   const [news,ann]=await Promise.all([
+   const [news,ann,qResult]=await Promise.all([
     cachedData(db,'stock-news:'+code,120000,()=>fetchEastmoneyStockNews(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)})),
-    cachedData(db,'announcements:'+code,900000,()=>fetchCninfoAnnouncements(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)}))
+    cachedData(db,'announcements:'+code,900000,()=>fetchCninfoAnnouncements(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)})),
+    cachedData(db,'quote:'+code,10000,()=>quote(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)}))
    ]);
-   const rows=[...(news.data?.rows||[]),...(ann.data?.rows||[]).map(x=>({...x,category:'公告'}))];
-   return json({ok:rows.length>0,category,code,fetchedAt:now(),rows,newsSource:news.data?.source||null,announcementSource:ann.data?.source||null,errors:[news.error,ann.error].filter(Boolean),note:'新闻与公告分开标注；只有标题/日期/链接通过校验的记录才展示。'},rows.length?200:502);
+   const candidates=news.data?.rows||[],name=String(qResult.data?.name||'').trim();
+   const relevantNews=candidates.filter(x=>{const title=String(x.title||''),summary=String(x.summary||'');return(name.length>=2&&(title.includes(name)||summary.includes(name)))||title.includes(code)||summary.includes(code)});
+   const relevanceNote=candidates.length&&!relevantNews.length?'已抓取'+candidates.length+'条资讯候选，但标题/摘要未直接包含'+(name||code)+'，为避免把泛财经资讯冒充个股新闻，已过滤。':null;
+   const rows=[...relevantNews,...(ann.data?.rows||[]).map(x=>({...x,category:'公告'}))];
+   return json({ok:rows.length>0,category,code,fetchedAt:now(),rows,newsSource:news.data?.source||null,announcementSource:ann.data?.source||null,newsCandidateCount:candidates.length,newsRelevantCount:relevantNews.length,relevanceNote,errors:[news.error,ann.error,qResult.error].filter(Boolean),note:'个股新闻需标题/摘要直接匹配股票名称或代码；公告与新闻分开标注；只有标题/日期/链接通过校验的记录才展示。'},rows.length?200:502);
   }
   if(!['domestic','international'].includes(category))return json({ok:false,error:'category 应为 domestic、international 或 stock'},400);
   const data=await cachedData(db,'market-news:'+category,60000,()=>fetchMarketNews(category));
