@@ -352,28 +352,39 @@ async function fetchEastmoneyStockNews(code){
 }
 async function fetchScreenCandidates(){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
- const errors=[];
- for(const host of ['push2delay.eastmoney.com','push2.eastmoney.com']){
-  try{
-   const u=new URL('https://'+host+'/api/qt/clist/get');
-   for(const [k,v] of Object.entries({pn:'1',pz:'100',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs:'m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23',fields:'f12,f14,f2,f3,f5,f6,f7,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23,f62,f115',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
-   const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});if(!r.ok)throw Error(host+' HTTP '+r.status);
-   const body=await r.json(),diff=body?.data?.diff,list=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
-   const rows=list.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:Number(x.f2),changePct:Number(x.f3),amount:Number(x.f6),turnover:Number(x.f8),pe:Number(x.f9),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),marketCap:Number(x.f20),rankSource:'eastmoney-money-flow-'+host})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!x.name.includes('ST')&&x.price>0);
-   if(!rows.length)throw Error(host+' 返回空列表或无效字段');
-   return rows.slice(0,30);
-  }catch(e){errors.push(String(e?.message||e))}
- }
- // Sina is a price/volume fallback only; it does not supply equivalent main-force net flow.
- const u=new URL('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData');
- for(const [k,v] of Object.entries({page:'1',num:'100',sort:'amount',asc:'0',node:'hs_a',symbol:'',_:'1'}))u.searchParams.set(k,v);
- const r=await fetch(u,{headers:{...headers,'referer':'https://finance.sina.com.cn/'},signal:AbortSignal.timeout(5000),cache:'no-store'});
- if(!r.ok)throw Error('东方财富资金流排行备用集群失败（'+errors.join('；')+'）；新浪成交额榜 HTTP '+r.status);
- const raw=await r.text();let arr;try{arr=JSON.parse(raw)}catch{const m=raw.match(/\[[\s\S]*\]/);if(!m)throw Error('东方财富资金流排行失败（'+errors.join('；')+'）；新浪成交额榜格式异常');arr=JSON.parse(m[0])}
- if(!Array.isArray(arr)||!arr.length)throw Error('东方财富资金流排行失败（'+errors.join('；')+'）；新浪成交额榜为空');
- return arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:null,flow:null,marketCap:null,rankSource:'sina-turnover-fallback',primaryError:errors.join('；')})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!x.name.includes('ST')&&x.price>0).slice(0,30);
+ const errors=[],host='push2.eastmoney.com',pageSize=500,maxPages=12;
+ const parseBody=body=>{
+  const diff=body?.data?.diff,list=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
+  return list.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:Number(x.f2),changePct:Number(x.f3),amount:Number(x.f6),turnover:Number(x.f8),pe:Number(x.f9),flow:null,marketCap:Number(x.f20),rankSource:'eastmoney-full-market-amount-'+host}))
+   .filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!/(^ST|\*ST|退$|退市)/i.test(x.name)&&Number.isFinite(x.price)&&x.price>0);
+ };
+ const fetchPage=async pn=>{
+  const u=new URL('https://'+host+'/api/qt/clist/get');
+  for(const [k,v] of Object.entries({pn:String(pn),pz:String(pageSize),po:'1',np:'1',fltt:'2',invt:'2',fid:'f6',fs:'m:0+t:6,m:0+t:80,m:0+t:81,m:1+t:2,m:1+t:23',fields:'f12,f14,f2,f3,f5,f6,f7,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+  const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});
+  if(!r.ok)throw Error(host+' 第'+pn+'页 HTTP '+r.status);
+  const body=await r.json();if(!body?.data||!body.data.diff)throw Error(host+' 第'+pn+'页响应缺少data.diff');
+  return {body,rows:parseBody(body)};
+ };
+ try{
+  const first=await fetchPage(1),total=Number(first.body?.data?.total||first.body?.data?.totalCount||0);
+  const pages=Math.min(maxPages,Math.max(1,total?Math.ceil(total/pageSize):maxPages));
+  const rest=await Promise.all(Array.from({length:pages-1},(_,i)=>fetchPage(i+2)));
+  const unique=[...new Map([...first.rows,...rest.flatMap(x=>x.rows)].map(x=>[x.code,x])).values()];
+  if(unique.length<1000)throw Error(host+' 全市场分页后仅有 '+unique.length+' 只有效股票，未通过覆盖门槛');
+  return unique;
+ }catch(e){errors.push(String(e?.message||e))}
+ try{
+  const u=new URL('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData');
+  for(const [k,v] of Object.entries({page:'1',num:'5000',sort:'amount',asc:'0',node:'hs_a',symbol:'',_:'1'}))u.searchParams.set(k,v);
+  const r=await fetch(u,{headers:{...headers,'referer':'https://finance.sina.com.cn/'},signal:AbortSignal.timeout(5000),cache:'no-store'});
+  if(!r.ok)throw Error('新浪全市场行情 HTTP '+r.status);
+  const raw=await r.text();let arr;try{arr=JSON.parse(raw)}catch{const m=raw.match(/\[[\s\S]*\]/);if(!m)throw Error('新浪行情响应不是JSON数组');arr=JSON.parse(m[0])}
+  const unique=[...new Map(arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz|bj)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:null,flow:null,marketCap:null,rankSource:'sina-full-market-amount-fallback',primaryError:errors.join('；')})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!/(^ST|\*ST|退$|退市)/i.test(x.name)&&Number.isFinite(x.price)&&x.price>0).map(x=>[x.code,x])).values()];
+  if(unique.length<1000)throw Error('新浪备用行情仅返回 '+unique.length+' 只有效股票，拒绝将不完整数据标记为全市场扫描');
+  return unique.slice(0,5000);
+ }catch(e){throw Error('全市场股票清单未通过覆盖与有效性校验。东方财富：'+errors.join('；')+'；新浪备用源：'+String(e?.message||e))}
 }
-
 async function fetchStockFlowHistory(code,options={}){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const allHosts=['push2his.eastmoney.com','push2.eastmoney.com','push2delay.eastmoney.com'];
@@ -691,8 +702,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  if(!cfg.ai_endpoint||!cfg.ai_api_key||!cfg.ai_model)return json({error:'请先在设置中配置 AI Endpoint、API Key 和 Model'},400);
  const started=Date.now();let stage='读取候选行情、指数和资讯';
  try{
-  // Hard-budget this Worker invocation: candidate ranking is primary; broad market liquidity and
-  // generic news are optional context and are not fetched in the screening request.
+  // Broad-market scan uses bounded 500-row pages; only four finalists receive deep per-stock checks to protect Worker subrequest limits.
   const [candidatePayload,market]=await Promise.all([
    cachedData(db,'screen-candidates',45000,async()=>({items:await fetchScreenCandidates()})),
    Promise.all(['000001','399001'].map(async code=>{try{return await cachedData(db,'index:'+code,20000,()=>quoteIndex(code))}catch(e){return{code,error:String(e.message||e)}}}))
@@ -703,26 +713,23 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   const newsResult=await cachedData(db,'market-news:domestic',60000,()=>fetchMarketNews('domestic')).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)}));
   if(!candidates.length)throw Error('没有取得有效候选股行情，请稍后重试');
   stage='筛选候选股'+(candidates.some(c=>Number.isFinite(c.flow))?'并核验可用资金流':'（当前候选榜仅含成交额，不发起无效资金流请求）');
-  // First rank by observable liquidity, net flow, valuation availability and overheating risk.
+  // Rank the full market list locally; turnover is only a liquidity proxy, never main-force capital flow.
   const ranked=candidates.map(c=>{
    const flowKnown=Number.isFinite(c.flow),peKnown=Number.isFinite(c.pe)&&c.pe>0;
    const ch=Number.isFinite(c.changePct)?c.changePct:0,turn=Number.isFinite(c.turnover)?c.turnover:0;
    let score=0;
-   if(flowKnown)score+=c.flow>0?3:c.flow<0?-4:0;else score-=1;
-   if(peKnown)score+=c.pe<=25?2:c.pe<=40?1:c.pe>80?-2:0;else score-=0.5;
-   if(ch>=-2&&ch<=3)score+=2;else if(ch>6)score-=3;else if(ch< -5)score-=2;
-   if(turn>=0.5&&turn<=8)score+=1.5;else if(turn>15)score-=2;
-   if(Number.isFinite(c.amount)&&c.amount>300000000)score+=1;
+   if(flowKnown)score+=c.flow>0?3:c.flow<0?-4:0;
+   if(peKnown)score+=c.pe<=20?2:c.pe<=35?1:c.pe>80?-2:0;
+   if(ch>=-3&&ch<=2)score+=3;else if(ch>2&&ch<=5)score+=1;else if(ch>5)score-=3;else if(ch< -8)score-=3;else if(ch< -3)score+=0.5;
+   if(turn>=0.5&&turn<=5)score+=1.5;else if(turn>12)score-=2;
+   if(Number.isFinite(c.amount)&&c.amount>1000000000)score+=2;else if(Number.isFinite(c.amount)&&c.amount>300000000)score+=1;
    return {...c,preScore:Number(score.toFixed(2))};
   }).sort((a,b)=>b.preScore-a.preScore);
-  // Do not fan out into per-stock history endpoints for all ranked candidates. The ranking f62
-  // is only an undated snapshot; keep it labeled as such and never treat it as 5-day flow history.
-  const flowChecked=ranked.slice(0,3).map(c=>({...c,flowHistory:null,flowHistoryError:Number.isFinite(c.flow)
-   ?'候选榜仅含交易日期未核实的资金流快照；为控制Worker子请求预算，未追加逐股历史请求'
-   :'候选榜未提供可验证资金流字段；为控制Worker子请求预算，跳过逐股资金流历史请求'}));
-  const chosen=flowChecked.slice(0,3);
+  // Expensive history and risk checks are limited to four finalists selected from the broad-market scan.
+  const flowChecked=ranked.slice(0,4).map(c=>({...c,flowHistory:null,flowHistoryError:'全市场行情初筛不含可验证个股资金流；进入深入分析后单独核验带日期的资金流历史'}));
+  const chosen=flowChecked.slice(0,4);
   stage='读取最终候选股行情和日K线';
-  // Fetch actual quote + daily bars for only the three finalists, avoiding the old high fan-out pattern.
+  // Fetch actual quote + daily bars for four finalists, keeping the request budget bounded.
   const results=await Promise.all(chosen.map(async c=>{
    const [qResult,kResult,finResult]=await Promise.all([
     cachedData(db,'quote:'+c.code,10000,()=>quote(c.code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
@@ -759,7 +766,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
     return recent&&tokens.some(t=>String(n.title||'').includes(t)||String(n.summary||'').includes(t));
    }).slice(0,3);
   }
-  // Risk-first review of official announcements for only the three finalists. Missing coverage is UNKNOWN, never "no risk".
+  // Risk-first review of official announcements for four full-market finalists. Missing coverage is UNKNOWN, never "no risk".
   const announcementChecks=await Promise.all(results.map(async item=>cachedData(db,'screen-announcements:'+item.code,900000,()=>fetchCninfoAnnouncementsFallback(item.code,{maxAttempts:1,pageSize:30})).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
   for(const item of results){
    const ann=announcementChecks.find(x=>x.code===item.code), rows=ann?.data?.rows||[];
@@ -852,7 +859,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    item.screenEvidence={validFiveDayStockFlow:!!validHistory,positiveFiveDayStockFlow:flowPositive,matchedSectorCount:matchedSector.length,positiveSectorFlow:sectorPositive,negativeSectorFlow:sectorNegative,technicalTrend:ind.trend||'未知',shortMomentumPositive:shortMomentum,fundamentalProfitPositive:fundamentalPositive,catalystEvidence,matchedNewsCount:(item.relatedNews||[]).length,overheating,riskVeto,riskUnknown,technicalBroken,qualified};
   }
   const good=results.filter(x=>x.ok);
-  if(!good.length)throw Error('三只候选股均未能完成基础数据核验');
+  if(!good.length)throw Error('本轮全市场初筛候选均未能完成基础数据核验');
    const indexCount=market.filter(x=>x&&Number.isFinite(x.price)&&x.price>0).length;
    const quoteCount=good.filter(x=>Number.isFinite(x.analysis.quote?.price)&&x.analysis.quote.price>0).length;
    const klineCount=good.filter(x=>x.analysis.indicators?.ma20!=null).length;
@@ -862,9 +869,9 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const financeErrors=good.map(x=>x.analysis.financialSnapshotError).filter(Boolean).slice(0,3).join(' | ');
    if(indexCount<2||quoteCount<3||klineCount<2||financeCount<2)throw Error('基础行情/技术/财务数据质量门槛未通过，暂不生成误导性报告。可用数据：指数 '+indexCount+'/2，个股实时行情 '+quoteCount+'/'+good.length+'，至少20日有效日K '+klineCount+'/'+good.length+'，财务摘要 '+financeCount+'/'+good.length+'。资金流当前 '+flowCount+'/3（资金流不是报告生成的硬门槛，缺失时会明确标注未知）。资金流错误：'+(flowErrors||'无')+'。财务错误：'+(financeErrors||'无')+'。市场流动性源：'+(liquidityResult.error||liquidityResult.source||'未知')+'。');
   const payload={
-   generatedAt:now(),elapsedMs:Date.now()-started,marketIndices:market,marketLiquidity:liquidityResult,
+   generatedAt:now(),elapsedMs:Date.now()-started,marketUniverse:{source:candidates[0]?.rankSource||null,validStockCount:candidates.length,scope:'全市场股票清单初筛；成交额仅作流动性代理，不代表主力资金',minimumCoverage:1000,coveragePassed:candidates.length>=1000,scanDate:now()},marketIndices:market,marketLiquidity:liquidityResult,
    marketNews:(newsResult.data?.rows||[]).slice(0,12),newsFetchError:newsResult.error,
-   selectionMethod:candidates.some(c=>Number.isFinite(c.flow))?'资金流字段可用时优先核验 + 估值字段可用性 + 涨幅不过热 + 日K趋势/回撤复核':'资金流可用时优先核验资金流，结合估值、涨幅、日K趋势/回撤筛选；每只候选仍需查看板块、新闻与资金流的实际覆盖情况',
+   selectionMethod:'全市场行情池 → 日涨幅/换手/估值/成交额因子排序 → 前4名深入核验日K、财务、所属板块、带日期的5日资金历史和公告风险；成交额不等于主力资金',
    candidates:good.map(x=>({
     stock:{code:x.code,name:x.name,price:x.analysis.quote.price,changePct:x.changePct,amount:x.amount,turnover:x.turnover,pe:x.analysis.quote.pe??x.pe,pb:x.analysis.quote.pb??null,flow:x.flow,flowSource:x.analysis.fundFlowHistory?.source||x.rankSource,flowHistory:x.analysis.fundFlowHistory,flowHistoryError:x.analysis.flowHistoryError,flowPeriod:x.analysis.fundFlowHistory?.period||null,financialSnapshot:x.analysis.financialSnapshot||null,financialSnapshotError:x.analysis.financialSnapshotError||null,preScore:x.preScore},
     technical:x.analysis.indicators,klineSource:x.analysis.klineSource,klineError:x.analysis.klineError,
@@ -876,6 +883,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
     '为控制Worker子请求预算，本轮智能选股未抓取泛市场新闻；新闻/催化不在本轮证据内，不能据此判断有或没有催化。',
     '若候选股资金流字段为空或来自新浪涨幅榜，必须标记未知，不得推断为净流入。',
     '本轮尚未接入可验证的融资余额/融资净买入、股东户数变化、控股股东质押比例、机构评级目标价的结构化历史；这些项目必须标为未核验，不可假设为正常。',
+    '全市场扫描记录实际有效股票数量与行情源；若覆盖不足1000只则拒绝生成报告，覆盖门槛不代表已确认包含全部5000余只股票。',
     '本轮尚未拉取外盘指数实时行情与汇率/跨境传导数据；不能凭模型记忆描述为当日外盘事实。',
     '解禁公告仅用于发现风险线索，若未能从公告正文确认未来30天的实际上市日期，必须标记未知，不可标记“未触发”。'
    ]
