@@ -321,12 +321,12 @@ async function fetchMarketNews(category='domestic'){
  if(!rows.length)throw Error('新闻源均未返回有效新闻：'+results.map(x=>x.error).filter(Boolean).join('；'));
  return{source:results.filter(x=>x.rows.length).map(x=>x.rows[0].source).join('+'),category:intl?'international':'domestic',fetchedAt:now(),rows:rows.slice(0,40),sourceChecks:results.map((x,i)=>({source:i?'eastmoney':'sina',validRows:x.rows.length,error:x.error}))};
 }
-async function fetchEastmoneyStockNews(code){
+async function fetchEastmoneyStockNews(code,keyword=code){
  const errors=[],headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
  // Independent fallback: getNewsByCode returns 404 in production, while infomines can return no usable article rows.
  try{
   const u=new URL('https://search-api-web.eastmoney.com/search/jsonp');
-  const inner={uid:'',keyword:String(code),type:['cmsArticleWebOld'],client:'web',clientType:'web',clientVersion:'curr',param:{cmsArticleWebOld:{searchScope:'default',sort:'default',pageIndex:1,pageSize:20,preTag:'',postTag:''}}};
+  const inner={uid:'',keyword:String(keyword||code),type:['cmsArticleWebOld'],client:'web',clientType:'web',clientVersion:'curr',param:{cmsArticleWebOld:{searchScope:'default',sort:'default',pageIndex:1,pageSize:20,preTag:'',postTag:''}}};
   u.searchParams.set('cb','jQuery_news');u.searchParams.set('param',JSON.stringify(inner));
   const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://so.eastmoney.com/','accept':'application/json,text/javascript,*/*'},signal:AbortSignal.timeout(5500),cache:'no-store'});
   if(!r.ok)throw Error('HTTP '+r.status);
@@ -645,11 +645,13 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
     cachedData(db,'announcements:'+code,900000,()=>fetchCninfoAnnouncements(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)})),
     cachedData(db,'quote:'+code,10000,()=>quote(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)}))
    ]);
-   const candidates=news.data?.rows||[],name=String(qResult.data?.name||'').trim();
-   const relevantNews=candidates.filter(x=>{const title=String(x.title||''),summary=String(x.summary||'');return(name.length>=2&&(title.includes(name)||summary.includes(name)))||title.includes(code)||summary.includes(code)});
+   let candidates=news.data?.rows||[],name=String(qResult.data?.name||'').trim();
+   let relevantNews=candidates.filter(x=>{const title=String(x.title||''),summary=String(x.summary||'');return(name.length>=2&&(title.includes(name)||summary.includes(name)))||title.includes(code)||summary.includes(code)});
+   let nameNews={data:null,error:null};
+   if(!relevantNews.length&&name.length>=2){nameNews=await cachedData(db,'stock-news-name:'+code,120000,()=>fetchEastmoneyStockNews(code,name)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)}));const namedCandidates=nameNews.data?.rows||[];candidates=[...candidates,...namedCandidates];relevantNews=namedCandidates.filter(x=>String(x.title||'').includes(name)||String(x.summary||'').includes(name)||String(x.title||'').includes(code)||String(x.summary||'').includes(code));}
    const relevanceNote=candidates.length&&!relevantNews.length?'已抓取'+candidates.length+'条资讯候选，但标题/摘要未直接包含'+(name||code)+'，为避免把泛财经资讯冒充个股新闻，已过滤。':null;
    const rows=[...relevantNews,...(ann.data?.rows||[]).map(x=>({...x,category:'公告'}))];
-   return json({ok:rows.length>0,category,code,fetchedAt:now(),rows,newsSource:news.data?.source||null,announcementSource:ann.data?.source||null,newsCandidateCount:candidates.length,newsRelevantCount:relevantNews.length,relevanceNote,errors:[news.error,ann.error,qResult.error].filter(Boolean),note:'个股新闻需标题/摘要直接匹配股票名称或代码；公告与新闻分开标注；只有标题/日期/链接通过校验的记录才展示。'},rows.length?200:502);
+   return json({ok:rows.length>0,category,code,fetchedAt:now(),rows,newsSource:[news.data?.source,nameNews.data?.source].filter(Boolean).join('+')||null,announcementSource:ann.data?.source||null,newsCandidateCount:candidates.length,newsRelevantCount:relevantNews.length,relevanceNote,errors:[news.error,nameNews.error,ann.error,qResult.error].filter(Boolean),note:'个股新闻需标题/摘要直接匹配股票名称或代码；公告与新闻分开标注；只有标题/日期/链接通过校验的记录才展示。'},rows.length?200:502);
   }
   if(!['domestic','international'].includes(category))return json({ok:false,error:'category 应为 domestic、international 或 stock'},400);
   const data=await cachedData(db,'market-news:'+category,60000,()=>fetchMarketNews(category));
@@ -741,8 +743,8 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   const ma20=avg(20),ma60=avg(60),ma5=avg(5);
   const shortTermFactors=computeShortTermFactors(rows,qResult.data,k?.quality||null);
   const [stockNewsResult,marketNewsResult]=await Promise.all([
-   cachedData(db,'stock-news:'+code,120000,()=>fetchEastmoneyStockNews(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)})),
-   cachedData(db,'market-news:domestic',60000,()=>fetchMarketNews('domestic')).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)}))
+   cachedData(db,'stock-news:'+code+':'+String(q.name||code),120000,()=>fetchEastmoneyStockNews(code,q.name||code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)})),
+   cachedData(db,'market-news:domestic,60000,()=>fetchMarketNews('domestic')).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)}))
   ]);
   const rawStockNews=stockNewsResult.data?.rows||[];
   const relatedNews=rawStockNews.filter(x=>{const title=String(x.title||''),summary=String(x.summary||''),name=String(qResult.data?.name||'').trim();return(name.length>=2&&(title.includes(name)||summary.includes(name)))||title.includes(code)||summary.includes(code)});
