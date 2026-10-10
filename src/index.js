@@ -322,6 +322,22 @@ async function fetchMarketNews(category='domestic'){
  return{source:results.filter(x=>x.rows.length).map(x=>x.rows[0].source).join('+'),category:intl?'international':'domestic',fetchedAt:now(),rows:rows.slice(0,40),sourceChecks:results.map((x,i)=>({source:i?'eastmoney':'sina',validRows:x.rows.length,error:x.error}))};
 }
 async function fetchEastmoneyStockNews(code){
+ // Independent fallback: getNewsByCode returns 404 in production, while infomines can return no usable article rows.
+ try{
+  const u=new URL('https://search-api-web.eastmoney.com/search/jsonp');
+  const inner={uid:'',keyword:String(code),type:['cmsArticleWebOld'],client:'web',clientType:'web',clientVersion:'curr',param:{cmsArticleWebOld:{searchScope:'default',sort:'default',pageIndex:1,pageSize:20,preTag:'',postTag:''}}};
+  u.searchParams.set('cb','jQuery_news');u.searchParams.set('param',JSON.stringify(inner));
+  const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://so.eastmoney.com/','accept':'application/json,text/javascript,*/*'},signal:AbortSignal.timeout(5500),cache:'no-store'});
+  if(!r.ok)throw Error('HTTP '+r.status);
+  const raw=(await r.text()).trim();let body;
+  try{body=JSON.parse(raw)}catch{const left=raw.indexOf('('),right=raw.lastIndexOf(')');if(left<0||right<=left)throw Error('JSONP响应格式异常');body=JSON.parse(raw.slice(left+1,right))}
+  const arr=body?.result?.cmsArticleWebOld;
+  if(!Array.isArray(arr)||!arr.length)throw Error('cmsArticleWebOld返回0条文章；result字段='+(Object.keys(body?.result||{}).join(',')));
+  const rows=arr.map(x=>({title:String(x.title||'').replace(/<[^>]*>/g,'').trim(),summary:String(x.content||x.summary||'').replace(/<[^>]*>/g,'').trim().slice(0,500),url:String(x.url||'').replace(/\\/g,''),publishedAt:x.date||null,source:'eastmoney-stock-news-search',code})).filter(x=>x.title&&/^https?:\/\//i.test(x.url));
+  if(!rows.length)throw Error('文章结果未通过标题/URL校验');
+  return{source:'eastmoney-stock-news-search',fetchedAt:now(),code,rows:rows.slice(0,20),primaryError:errors.join('；')};
+ }catch(e){errors.push('search-api-web: '+String(e?.message||e))}
+
  const errors=[],headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
  const parseRows=(body,source)=>{
   const id=secid(code),root=body?.data??body?.result??body;
