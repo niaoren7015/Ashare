@@ -15,6 +15,11 @@ on:
 permissions:
   contents: read
 
+# Prevent older commits from deploying after a newer production build.
+concurrency:
+  group: ashare-production-deploy
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
