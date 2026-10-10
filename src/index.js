@@ -485,7 +485,7 @@ async function fetchStockBoards(code,options={}){
   const names=[];
   for(const [field,type] of [['f127','industry'],['f128','concept'],['f129','concept'],['f130','concept'],['f131','concept'],['f132','concept']]){
    const raw=d[field];if(raw==null)continue;
-   const vals=String(raw).split(/[;,，、|]/).map(x=>x.trim()).filter(x=>x.length>=2&&!/^\\d+$/.test(x));
+   const vals=String(raw).split(/[;,，、|]/).map(x=>x.trim()).filter(x=>x.length>=2&&!/^\d+$/.test(x));
    for(const name of vals)if(!names.some(x=>x.name===name))names.push({code:null,name,type,changePct:null,source:'eastmoney-stock-get-'+field});
   }
   if(names.length)return names;
@@ -658,7 +658,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   return json({ok:false,code:c,error:String(e?.message||e),source:'eastmoney-stock-fflow-kline'},502);
  }
 }if(p==='/api/announcements'){try{const c=String(u.searchParams.get('code')||'');if(!/^\d{6}$/.test(c))return json({error:'股票代码应为6位数字'},400);const a=await cachedData(db,'announcements:'+c,900000,()=>fetchCninfoAnnouncements(c));return json({ok:true,...a})}catch(e){return json({ok:false,error:String(e?.message||e)},502)}}if(p==='/api/stock-boards'||p==='/api/sector-context'){
- const c=String(u.searchParams.get('code')||'').trim();if(!/^\\d{6}$/.test(c))return json({ok:false,error:'股票代码应为6位数字'},400);
+ const c=String(u.searchParams.get('code')||'').trim();if(!/^\d{6}$/.test(c))return json({ok:false,error:'股票代码应为6位数字'},400);
  const [br,ir,cr]=await Promise.all([
   cachedData(db,'stock-boards:'+c,300000,()=>fetchStockBoards(c)).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry')).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
@@ -694,7 +694,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  };
  if(req.method==='PUT'){
   const b=await req.json().catch(()=>({})),code=String(b.code||existing.code).trim(),side=b.side==='SELL'?'SELL':b.side==='BUY'?'BUY':existing.side,price=Number(b.price??existing.price),shares=Number(b.shares??existing.shares),fee=Number(b.fee??existing.fee),tradedAt=String(b.traded_at||b.tradedAt||existing.traded_at),note=String(b.note??existing.note??'');
-  if(!/^\\d{6}$/.test(code)||!Number.isFinite(price)||price<=0||!Number.isFinite(shares)||shares<=0||!Number.isFinite(fee)||fee<0||!Number.isFinite(Date.parse(tradedAt)))return json({error:'请检查代码、买卖方向、价格、数量、费用和成交时间'},400);
+  if(!/^\d{6}$/.test(code)||!Number.isFinite(price)||price<=0||!Number.isFinite(shares)||shares<=0||!Number.isFinite(fee)||fee<0||!Number.isFinite(Date.parse(tradedAt)))return json({error:'请检查代码、买卖方向、价格、数量、费用和成交时间'},400);
   const updatedRow={...existing,code,side,price,shares,fee,traded_at:tradedAt,note};
   const checkSequence=rows=>{let bal=0;for(const t of rows.sort((a,b)=>String(a.traded_at).localeCompare(String(b.traded_at))||Number(a.id)-Number(b.id))){bal+=t.side==='BUY'?Number(t.shares):-Number(t.shares);if(bal< -1e-8)return false}return true};
   const oldRows=await db.prepare('SELECT * FROM trades WHERE code=? AND id<>? ORDER BY traded_at ASC,id ASC').bind(existing.code,id).all();
