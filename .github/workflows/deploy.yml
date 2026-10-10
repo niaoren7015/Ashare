@@ -101,6 +101,12 @@ jobs:
               universe: x.marketUniverse || null,
               analyzedCandidates: Array.isArray(x.results) ? x.results.length : null,
               actionableCount: x.actionableCount ?? null,
+              visibleDGradeCount: Array.isArray(x.results) ? x.results.filter(r=>r.screenGrade==='D').length : null,
+              sectorMembershipCount: Array.isArray(x.results) ? x.results.filter(r=>(r.sectorContext?.boards||[]).length>0).length : null,
+              matchedSectorFlowCount: Array.isArray(x.results) ? x.results.filter(r=>(r.sectorContext?.boards||[]).some(b=>Number.isFinite(b.sectorFlow?.flow))).length : null,
+              matchedIndustryFlowCount: Array.isArray(x.results) ? x.results.filter(r=>(r.sectorContext?.boards||[]).some(b=>b.sectorFlow?.type==='industry'&&Number.isFinite(b.sectorFlow?.flow))).length : null,
+              matchedStockNewsCount: Array.isArray(x.results) ? x.results.filter(r=>(r.relatedNews||[]).length>0).length : null,
+              finalists: Array.isArray(x.results) ? x.results.map(r=>({code:r.code,grade:r.screenGrade,boards:(r.sectorContext?.boards||[]).length,matchedFlows:(r.sectorContext?.boards||[]).filter(b=>Number.isFinite(b.sectorFlow?.flow)).length,news:(r.relatedNews||[]).length})) : null,
               sampleCodes: Array.isArray(x.results) ? x.results.map(r=>r.code).slice(0,8) : null
             }));
             if (!response.ok || x.ok !== true) throw new Error('Production smart-screen endpoint failed');
