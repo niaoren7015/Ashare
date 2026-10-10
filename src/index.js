@@ -475,6 +475,23 @@ async function fetchSectorFlowRanks(type='industry',options={}){
 async function fetchStockBoards(code,options={}){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const allHosts=['push2.eastmoney.com','push2delay.eastmoney.com','push2his.eastmoney.com','29.push2.eastmoney.com','79.push2.eastmoney.com'];
+ // Check the stock quote's explicit industry/concept fields before the legacy membership endpoint.
+ try{
+  const u=new URL('https://push2.eastmoney.com/api/qt/stock/get');
+  for(const [k,v] of Object.entries({secid:secid(code),fields:'f57,f58,f127,f128,f129,f130,f131,f132',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+  const r=await fetch(u,{headers,signal:AbortSignal.timeout(3500),cache:'no-store'});
+  if(!r.ok)throw Error('stock/get HTTP '+r.status);
+  const d=(await r.json())?.data;if(!d)throw Error('stock/get 无 data');
+  const names=[];
+  for(const [field,type] of [['f127','industry'],['f128','concept'],['f129','concept'],['f130','concept'],['f131','concept'],['f132','concept']]){
+   const raw=d[field];if(raw==null)continue;
+   const vals=String(raw).split(/[;,，、|]/).map(x=>x.trim()).filter(x=>x.length>=2&&!/^\\d+$/.test(x));
+   for(const name of vals)if(!names.some(x=>x.name===name))names.push({code:null,name,type,changePct:null,source:'eastmoney-stock-get-'+field});
+  }
+  if(names.length)return names;
+  errors.push('stock/get 未返回可解析的行业/概念名称（已检查 f127-f132）');
+ }catch(e){errors.push('stock/get: '+String(e?.message||e))}
+
  const hosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
  for(const host of hosts){
   try{
@@ -640,7 +657,56 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   await health(db,'eastmoney-stock-flow','error',String(e?.message||e));
   return json({ok:false,code:c,error:String(e?.message||e),source:'eastmoney-stock-fflow-kline'},502);
  }
-}if(p==='/api/announcements'){try{const c=u.searchParams.get('code');if(!/^\d{6}$/.test(String(c||'')))return json({error:'股票代码应为6位数字'},400);const a=await cachedData(db,'announcements:'+c,900000,()=>fetchCninfoAnnouncements(c));return json({ok:true,...a})}catch(e){return json({ok:false,error:String(e?.message||e)},502)}}if(p==='/api/trades'){const code=u.searchParams.get('code');let r;if(code)r=await db.prepare('SELECT * FROM trades WHERE code=? ORDER BY traded_at DESC,id DESC LIMIT 200').bind(code).run();else r=await db.prepare('SELECT * FROM trades ORDER BY traded_at DESC,id DESC LIMIT 200').run();return json(r.results||[])}if(p==='/api/holdings'){if(req.method==='GET')return json(await listHoldings(db));if(req.method==='POST')try{return json(await addTrade(db,await req.json()),201)}catch(e){return json({error:e.message},400)}}if(p==='/api/alerts'){const r=await db.prepare('SELECT * FROM alerts ORDER BY created_at DESC LIMIT 100').run();return json(r.results||[])}if(p==='/api/data-health'){const r=await db.prepare('SELECT * FROM data_health').run();return json(r.results||[])}if(p==='/api/settings'&&req.method==='GET'){const r=await db.prepare("SELECT key,value FROM app_settings WHERE key IN ('ai_endpoint','ai_api_key','ai_model')").run();const cfg={};for(const x of r.results||[]){try{cfg[x.key]=JSON.parse(x.value)}catch{cfg[x.key]=x.value}}return json({endpoint:cfg.ai_endpoint||'https://api.openai.com/v1/chat/completions',model:cfg.ai_model||'',configured:!!(cfg.ai_endpoint&&cfg.ai_api_key&&cfg.ai_model),hasKey:!!cfg.ai_api_key})}if(p==='/api/settings'&&req.method==='POST'){const b=await req.json();const allowed=new Set(['ai_endpoint','ai_api_key','ai_model']);if(!allowed.has(b.key))return json({error:'不允许修改此配置项'},400);const value=String(b.value??'').trim();if(b.key==='ai_endpoint'){let z;try{z=new URL(value)}catch{return json({error:'Endpoint 必须是有效的 HTTPS URL'},400)}if(z.protocol!=='https:')return json({error:'Endpoint 必须使用 HTTPS'},400)}if(value.length>2000)return json({error:'配置值过长'},400);await db.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at').bind(b.key,JSON.stringify(value),now()).run();return json({ok:true})}if(p==='/api/ai/analyze'&&req.method==='POST'){
+}if(p==='/api/stock-boards'||p==='/api/sector-context'){
+ const c=String(u.searchParams.get('code')||'').trim();if(!/^\\d{6}$/.test(c))return json({ok:false,error:'股票代码应为6位数字'},400);
+ const [br,ir,cr]=await Promise.all([
+  cachedData(db,'stock-boards:'+c,300000,()=>fetchStockBoards(c)).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
+  cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry')).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
+  cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept')).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))
+ ]);
+ const sectors=[...ir.data,...cr.data],byCode=new Map(),byName=new Map();for(const x of sectors){if(x.code)byCode.set(String(x.code),x);if(x.name)byName.set(String(x.name).trim().toLowerCase(),x)}
+ const boards=br.data.map(b=>({...b,sectorFlow:(b.code?byCode.get(String(b.code)):null)||byName.get(String(b.name||'').trim().toLowerCase())||null}));
+ return json({ok:boards.length>0,code:c,checkedAt:now(),membershipSource:boards[0]?.source||null,boards,membershipError:br.error,industry:{count:ir.data.length,flowCoverage:ir.data.length?Math.round(ir.data.filter(x=>Number.isFinite(x.flow)).length/ir.data.length*100):0,error:ir.error},concept:{count:cr.data.length,flowCoverage:cr.data.length?Math.round(cr.data.filter(x=>Number.isFinite(x.flow)).length/cr.data.length*100):0,error:cr.error},note:'只有明确匹配的板块才附加板块资金；名称未匹配不等于板块资金接口不可用。'});
+}if(p==='/api/reports'){
+ if(req.method==='GET'){
+  const type=String(u.searchParams.get('type')||'');if(type&&!['ai_analysis','ai_screen','holdings_report'].includes(type))return json({error:'报告类型不受支持'},400);
+  const limit=Math.min(200,Math.max(1,Number(u.searchParams.get('limit'))||100));
+  const rows=type?await db.prepare('SELECT id,code,report_type,payload,created_at FROM reports WHERE report_type=? ORDER BY created_at DESC,id DESC LIMIT ?').bind(type,limit).all():await db.prepare('SELECT id,code,report_type,payload,created_at FROM reports ORDER BY created_at DESC,id DESC LIMIT ?').bind(limit).all();
+  return json((rows.results||[]).map(r=>{let v={};try{v=JSON.parse(r.payload)}catch{}return{id:r.id,code:r.code,reportType:r.report_type,createdAt:r.created_at,title:r.report_type==='ai_screen'?'智能选股报告':r.report_type==='holdings_report'?'持仓研判报告':'个股深度研究报告 · '+(r.code||''),content:v.content||'',model:v.model||'',actionableCount:v.actionableCount??null,excludedDCount:v.excludedDCount??null,results:Array.isArray(v.results)?v.results:[],generatedAt:v.generatedAt||r.created_at}}));
+ }
+ if(req.method==='DELETE'){
+  const b=await req.json().catch(()=>({})),ids=[...new Set((Array.isArray(b.ids)?b.ids:[]).map(Number).filter(n=>Number.isSafeInteger(n)&&n>0))];
+  if(!ids.length||ids.length>100)return json({error:'请选择1至100条有效报告'},400);
+  const marks=ids.map(()=>'?').join(',');const r=await db.prepare('DELETE FROM reports WHERE id IN ('+marks+')').bind(...ids).run();return json({ok:true,deleted:r.meta?.changes??ids.length});
+ }
+ return json({error:'方法不支持'},405);
+}if(/^\\/api\\/trades\\/\\d+$/.test(p)){
+ const id=Number(p.split('/').at(-1));if(!Number.isSafeInteger(id)||id<=0)return json({error:'交易记录ID无效'},400);
+ const existing=await db.prepare('SELECT * FROM trades WHERE id=?').bind(id).first();if(!existing)return json({error:'交易记录不存在'},404);
+ const recalc=async code=>{
+  const list=await db.prepare('SELECT * FROM trades WHERE code=? ORDER BY traded_at ASC,id ASC').bind(code).all();let shares=0,cost=0;
+  for(const t of list.results||[]){const n=Number(t.shares),price=Number(t.price),fee=Number(t.fee)||0;if(t.side==='BUY'){cost+=price*n+fee;shares+=n}else{if(n>shares+1e-8)throw Error('交易流水导致卖出数量超过累计持仓，已拒绝修改');const avgBefore=shares>0?cost/shares:0;shares-=n;if(shares<1e-8){shares=0;cost=0}else cost=shares*avgBefore;}}
+  const holding=await db.prepare('SELECT * FROM holdings WHERE code=? ORDER BY id LIMIT 1').bind(code).first();
+  if(!list.results?.length){if(holding)await db.prepare('DELETE FROM holdings WHERE code=?').bind(code).run();return}
+  const avg=shares>0?cost/shares:0;
+  if(holding)await db.prepare('UPDATE holdings SET shares=?,avg_cost=?,updated_at=? WHERE id=?').bind(shares,avg,now(),holding.id).run();
+  else await db.prepare('INSERT INTO holdings(code,name,shares,avg_cost,note,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').bind(code,code,shares,avg,'',now(),now()).run();
+ };
+ if(req.method==='PUT'){
+  const b=await req.json().catch(()=>({})),code=String(b.code||existing.code).trim(),side=b.side==='SELL'?'SELL':b.side==='BUY'?'BUY':existing.side,price=Number(b.price??existing.price),shares=Number(b.shares??existing.shares),fee=Number(b.fee??existing.fee),tradedAt=String(b.traded_at||b.tradedAt||existing.traded_at),note=String(b.note??existing.note??'');
+  if(!/^\\d{6}$/.test(code)||!Number.isFinite(price)||price<=0||!Number.isFinite(shares)||shares<=0||!Number.isFinite(fee)||fee<0||!Number.isFinite(Date.parse(tradedAt)))return json({error:'请检查代码、买卖方向、价格、数量、费用和成交时间'},400);
+  const oldRows=await db.prepare('SELECT * FROM trades WHERE code=? AND id<>? ORDER BY traded_at ASC,id ASC').bind(existing.code,id).all();
+  const newRows=[...(oldRows.results||[]),...(code===existing.code?[]:[...(await db.prepare('SELECT * FROM trades WHERE code=? ORDER BY traded_at ASC,id ASC').bind(code).all()).results||[]]),{...existing,code,side,price,shares,fee,traded_at:tradedAt,note}].sort((a,b)=>String(a.traded_at).localeCompare(String(b.traded_at))||Number(a.id)-Number(b.id));
+  let bal=0;for(const t of newRows){bal+=t.side==='BUY'?Number(t.shares):-Number(t.shares);if(bal< -1e-8)return json({error:'该修改会导致卖出数量超过交易时点累计持仓，已拒绝保存'},400)}
+  await db.prepare('UPDATE trades SET code=?,side=?,price=?,shares=?,fee=?,traded_at=?,note=? WHERE id=?').bind(code,side,price,shares,fee,tradedAt,note,id).run();
+  await recalc(existing.code);if(code!==existing.code)await recalc(code);return json({ok:true,id,code,previousCode:existing.code});
+ }
+ if(req.method==='DELETE'){
+  const remaining=await db.prepare('SELECT * FROM trades WHERE code=? AND id<>? ORDER BY traded_at ASC,id ASC').bind(existing.code,id).all();let bal=0;for(const t of remaining.results||[]){bal+=t.side==='BUY'?Number(t.shares):-Number(t.shares);if(bal< -1e-8)return json({error:'删除该记录会导致后续卖出超过累计持仓，已拒绝删除；请先调整后续交易'},400)}
+  await db.prepare('DELETE FROM trades WHERE id=?').bind(id).run();await recalc(existing.code);return json({ok:true,id,deleted:true});
+ }
+ return json({error:'方法不支持'},405);
+}if(p==='/api/trades'){if(req.method!=='GET')return json({error:'方法不支持'},405);const code=u.searchParams.get('code');let r;if(code)r=await db.prepare('SELECT * FROM trades WHERE code=? ORDER BY traded_at DESC,id DESC LIMIT 200').bind(code).run();else r=await db.prepare('SELECT * FROM trades ORDER BY traded_at DESC,id DESC LIMIT 200').bind(200).all();return json(r.results||[])}if(p==='/api/holdings'){if(req.method==='GET')return json(await listHoldings(db));if(req.method==='POST')try{return json(await addTrade(db,await req.json()),201)}catch(e){return json({error:e.message},400)}}if(p==='/api/alerts'){const r=await db.prepare('SELECT * FROM alerts ORDER BY created_at DESC LIMIT 100').run();return json(r.results||[])}if(p==='/api/data-health'){const r=await db.prepare('SELECT * FROM data_health').run();return json(r.results||[])}if(p==='/api/settings'&&req.method==='GET'){if(!/^\d{6}$/.test(String(c||'')))return json({error:'股票代码应为6位数字'},400);const a=await cachedData(db,'announcements:'+c,900000,()=>fetchCninfoAnnouncements(c));return json({ok:true,...a})}catch(e){return json({ok:false,error:String(e?.message||e)},502)}}if(p==='/api/trades'){const code=u.searchParams.get('code');let r;if(code)r=await db.prepare('SELECT * FROM trades WHERE code=? ORDER BY traded_at DESC,id DESC LIMIT 200').bind(code).run();else r=await db.prepare('SELECT * FROM trades ORDER BY traded_at DESC,id DESC LIMIT 200').run();return json(r.results||[])}if(p==='/api/holdings'){if(req.method==='GET')return json(await listHoldings(db));if(req.method==='POST')try{return json(await addTrade(db,await req.json()),201)}catch(e){return json({error:e.message},400)}}if(p==='/api/alerts'){const r=await db.prepare('SELECT * FROM alerts ORDER BY created_at DESC LIMIT 100').run();return json(r.results||[])}if(p==='/api/data-health'){const r=await db.prepare('SELECT * FROM data_health').run();return json(r.results||[])}if(p==='/api/settings'&&req.method==='GET'){const r=await db.prepare("SELECT key,value FROM app_settings WHERE key IN ('ai_endpoint','ai_api_key','ai_model')").run();const cfg={};for(const x of r.results||[]){try{cfg[x.key]=JSON.parse(x.value)}catch{cfg[x.key]=x.value}}return json({endpoint:cfg.ai_endpoint||'https://api.openai.com/v1/chat/completions',model:cfg.ai_model||'',configured:!!(cfg.ai_endpoint&&cfg.ai_api_key&&cfg.ai_model),hasKey:!!cfg.ai_api_key})}if(p==='/api/settings'&&req.method==='POST'){const b=await req.json();const allowed=new Set(['ai_endpoint','ai_api_key','ai_model']);if(!allowed.has(b.key))return json({error:'不允许修改此配置项'},400);const value=String(b.value??'').trim();if(b.key==='ai_endpoint'){let z;try{z=new URL(value)}catch{return json({error:'Endpoint 必须是有效的 HTTPS URL'},400)}if(z.protocol!=='https:')return json({error:'Endpoint 必须使用 HTTPS'},400)}if(value.length>2000)return json({error:'配置值过长'},400);await db.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at').bind(b.key,JSON.stringify(value),now()).run();return json({ok:true})}if(p==='/api/ai/analyze'&&req.method==='POST'){
  const b=await req.json().catch(()=>({})),code=String(b.code||'').trim(),cfg=await getAIConfig(db);
  if(!cfg.ai_endpoint||!cfg.ai_api_key||!cfg.ai_model)return json({error:'请先在设置中配置 AI Endpoint、API Key 和 Model'},400);
  const started=Date.now();
@@ -670,8 +736,9 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept')).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e.message||e)})),
    fetchCninfoAnnouncements(code).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
   ]);
-  const sectorMap=new Map([...industryResult.data,...conceptResult.data].map(x=>[x.code,x]));
-  const boards=(boardsResult.data||[]).map(x=>({...x,sectorFlow:sectorMap.get(x.code)||null}));
+  const sectorRows=[...industryResult.data,...conceptResult.data];
+  const sectorMap=new Map();for(const x of sectorRows){if(x.code)sectorMap.set('code:'+x.code,x);if(x.name)sectorMap.set('name:'+String(x.name).trim().toLowerCase(),x)}
+  const boards=(boardsResult.data||[]).map(x=>({...x,sectorFlow:(x.code?sectorMap.get('code:'+x.code):null)||sectorMap.get('name:'+String(x.name||'').trim().toLowerCase())||null}));
   const a={
    quote:q,kline:rows.slice(-120),klineSource:k?.source||null,klineFetchedAt:k?.fetchedAt||null,klineLatencyMs:k?.latencyMs||null,klineError:kResult.error,
    klineAdjustment:k?.adjustment||'unknown',klineQuality:k?.quality||null,klineWarning:k?.warning||null,
@@ -772,10 +839,11 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept',{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
    Promise.all(results.map(async item=>({code:item.code,...await cachedData(db,'stock-boards:'+item.code,300000,()=>fetchStockBoards(item.code,{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})))
   ]);
-  const sectorMap=new Map([...industryFlowResult.data,...conceptFlowResult.data].map(x=>[x.code,x]));
+  const sectorRows=[...industryFlowResult.data,...conceptFlowResult.data];
+  const sectorMap=new Map();for(const x of sectorRows){if(x.code)sectorMap.set('code:'+x.code,x);if(x.name)sectorMap.set('name:'+String(x.name).trim().toLowerCase(),x)}
   for(const item of results){
    const boardResult=boardResults.find(x=>x.code===item.code);
-   const boards=(boardResult?.data||[]).map(b=>({...b,sectorFlow:sectorMap.get(b.code)||null}));
+   const boards=(boardResult?.data||[]).map(b=>({...b,sectorFlow:(b.code?sectorMap.get('code:'+b.code):null)||sectorMap.get('name:'+String(b.name||'').trim().toLowerCase())||null}));
    item.sectorContext={boards,membershipError:boardResult?.error||null,industryFlowSource:industryFlowResult.data[0]?.source||null,industryFlowError:industryFlowResult.error||null,conceptFlowSource:conceptFlowResult.data[0]?.source||null,conceptFlowError:conceptFlowResult.error||null,sectorFlowUnavailable:!industryFlowResult.data.some(x=>Number.isFinite(x.flow))&&!conceptFlowResult.data.some(x=>Number.isFinite(x.flow))};
    const tokens=[item.name,...boards.map(b=>b.name)].map(v=>String(v||'').trim()).filter(v=>v.length>=2);
    item.relatedNews=(newsResult.data?.rows||[]).filter(n=>{
@@ -878,6 +946,8 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   }
   const good=results.filter(x=>x.ok);
   if(!good.length)throw Error('本轮全市场初筛候选均未能完成基础数据核验');
+  const displayResults=good.filter(x=>x.screenGrade!=='D');
+  const excludedDCount=good.length-displayResults.length;
    const indexCount=market.filter(x=>x&&Number.isFinite(x.price)&&x.price>0).length;
    const quoteCount=good.filter(x=>Number.isFinite(x.analysis.quote?.price)&&x.analysis.quote.price>0).length;
    const klineCount=good.filter(x=>x.analysis.indicators?.ma20!=null).length;
@@ -908,15 +978,15 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   };
   stage='调用AI生成选股报告';
   const eligible=good.filter(x=>x.screenGrade==='A'&&x.screenEvidence?.qualified).sort((a,b)=>(b.screenScore||0)-(a.screenScore||0));
-  const compactPayload={...payload,actionableCount:eligible.length,marketNews:(newsResult.data?.rows||[]).slice(0,8),candidates:payload.candidates.map(x=>{const r=good.find(y=>y.code===x.stock.code);return {...x,screenScore:r?.screenScore,screenDecision:r?.screenDecision,screenEvidence:r?.screenEvidence,screenGrade:r?.screenGrade,riskAudit:r?.riskAudit,relatedNews:r?.relatedNews||[],stock:{...x.stock,flowHistory:x.stock.flowHistory?{rows:(x.stock.flowHistory.rows||[]).slice(-5),latest:x.stock.flowHistory.latest,cumulativeMainNetInflow:x.stock.flowHistory.cumulativeMainNetInflow,historyDays:x.stock.flowHistory.historyDays,period:x.stock.flowHistory.period,source:x.stock.flowHistory.source}:null},sectorContext:{...x.sectorContext,boards:(x.sectorContext?.boards||[]).slice(0,3)}};})};
+  const compactPayload={...payload,actionableCount:eligible.length,excludedDCount,marketNews:(newsResult.data?.rows||[]).slice(0,8),candidates:payload.candidates.filter(x=>displayResults.some(y=>y.code===x.stock.code)).map(x=>{const r=displayResults.find(y=>y.code===x.stock.code);return {...x,screenScore:r?.screenScore,screenDecision:r?.screenDecision,screenEvidence:r?.screenEvidence,screenGrade:r?.screenGrade,riskAudit:r?.riskAudit,relatedNews:r?.relatedNews||[],stock:{...x.stock,flowHistory:x.stock.flowHistory?{rows:(x.stock.flowHistory.rows||[]).slice(-5),latest:x.stock.flowHistory.latest,cumulativeMainNetInflow:x.stock.flowHistory.cumulativeMainNetInflow,historyDays:x.stock.flowHistory.historyDays,period:x.stock.flowHistory.period,source:x.stock.flowHistory.source}:null},sectorContext:{...x.sectorContext,boards:(x.sectorContext?.boards||[]).slice(0,3)}};})};
   const content=await callAI(cfg,[
    {role:'system',content:'你是A股短线实战交易团队，必须把证据转化成明确行动，而不是复述数据。只允许依据输入，不能编造。风险否决优先于评分；riskAudit.veto或persistentFiveDayOutflow或technicalBroken为真时不得推荐建仓。A/B/C/D分级必须遵循输入的screenGrade，不可擅自升级。公告、解禁日期、质押比例未核验时，不得宣称风险已排除；公告接口返回的标题仅为线索，未阅读全文不等于确认事件。第一屏先给：一、总判断（可埋伏/等确认/持有观察/减仓防守/回避）；二、可执行名单0—3只，按优先级；三、每只一句“现在做什么”。如果没有合格股，必须明确写“本轮无符合准入条件的建仓标的”，绝不为凑数推荐。准入策略：资金面25分（仅至少5个有日期且非陈旧缓存的个股主力净流入历史才有效）；板块面25分（必须先验证个股板块归属，再匹配该板块有效净流入和涨跌）；量价面20分（趋势、短中期动量和量价确认；成交额榜不等于主力资金）；基本面15分（可核验的盈利/增长数据）；催化证据5分（新闻标题/摘要须匹配个股或已核验板块）；风险与拥挤度10分（过热、连续回撤、换手异常）。总分只作相对排序，不是胜率。当前后端没有抓取市场/个股新闻时，催化必须标为未核验，不能声称无催化，也不能凭模型知识补消息。股票进入观察池至少要有可验证的正向个股资金历史或正向所属板块资金证据，且技术趋势不能偏弱；否则只能列为暂不介入/观察，不得给出建仓指令。报告按顺序：1）市场状态与仓位建议（依据实际指数数据）；2）结论和动作清单；3）最多3只合格候选，每只只写“判断、为什么、介入触发、持有者怎么做、失效条件”；4）不推荐/排除原因；5）证据缺口简表。仓位纪律：单票上限5%，总仓位上限50%，节前40%；单日涨幅超过7%不允许立即建仓。建仓后若亏损达到-5%，原则上硬止损离场；仅A级且逻辑证据充分时可把上限放宽到-8%，必须解释依据。建仓后3—5个交易日没有正向催化或走势验证，减半仓并重新评估。每个推荐必须给出仓位上限、止损位和重新评估条件。默认中文、短句、人话，总长约1000—1400字。不要输出大段字段清单，不要把数据源诊断当正文主体。价格条件只能引用真实K线/均线/区间。不得承诺收益。'},
    {role:'user',content:'请按上述准入规则完成本轮A股短线选股。若没有合格标的，明确给出空仓/等待结论。候选股数量不等于推荐数量。实际抓取数据：'+JSON.stringify({...compactPayload,selectionMethod:'证据门槛+多因子评分；候选排行只用于形成初始观察池，非直接推荐',limitations:[...payload.limitations,'市场新闻'+(newsResult.error?'抓取失败：'+newsResult.error:'已抓取；仅保留近7天且匹配个股或已核验板块的标题/摘要。')+'公告风险扫描使用巨潮资讯单板块、最多30条返回结果；质押比例和未来30天解禁日期尚未完成结构化验证。','只有经日期核验的5日个股资金流或已匹配的所属板块资金流，才算资金面证据。']})}
   ],70000,4000);
   stage='保存选股报告';
   const created=now();
-  await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(null,'ai_screen',JSON.stringify({model:cfg.ai_model,content,results:good,actionableCount:eligible.length,market,marketUniverse:payload.marketUniverse,generatedAt:created,selectionMethod:payload.selectionMethod,limitations:payload.limitations}),created).run();
-  return json({ok:true,model:cfg.ai_model,generatedAt:created,content,results:good,actionableCount:eligible.length,market,marketUniverse:payload.marketUniverse,selectionMethod:payload.selectionMethod,limitations:payload.limitations,elapsedMs:Date.now()-started});
+  await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(null,'ai_screen',JSON.stringify({model:cfg.ai_model,content,results:displayResults,excludedDCount,actionableCount:eligible.length,market,marketUniverse:payload.marketUniverse,generatedAt:created,selectionMethod:payload.selectionMethod,limitations:payload.limitations}),created).run();
+  return json({ok:true,model:cfg.ai_model,generatedAt:created,content,results:displayResults,excludedDCount,actionableCount:eligible.length,market,marketUniverse:payload.marketUniverse,selectionMethod:payload.selectionMethod,limitations:payload.limitations,elapsedMs:Date.now()-started});
  }catch(e){return json({error:String(e.message||e),stage,elapsedMs:Date.now()-started},502)}
 }if(p==='/api/ai/holdings-report'&&req.method==='POST'){const cfg=await getAIConfig(db);if(!cfg.ai_endpoint||!cfg.ai_api_key||!cfg.ai_model)return json({error:'请先在设置中配置 AI Endpoint、API Key 和 Model'},400);try{const hs=await db.prepare('SELECT * FROM holdings WHERE shares>0 ORDER BY updated_at DESC').run();if(!hs.results?.length)return json({error:'当前没有有效持仓，先在个股页面录入买入交易'},400);const data=await Promise.all(hs.results.map(async h=>{let current;try{current=await analyze(h.code)}catch(e){current={error:String(e.message||e)}}const trades=await db.prepare('SELECT side,price,shares,fee,traded_at,note FROM trades WHERE code=? ORDER BY traded_at ASC,id ASC').bind(h.code).run();return{holding:h,marketAndTechnical:current,trades:trades.results||[]}}));const content=await callAI(cfg,[{role:'system',content:'你是严谨的中国A股持仓风险管理分析师。根据持仓数量、成本、完整交易流水和当前行情技术数据，输出组合总览、逐股优先级、浮动盈亏与风险、趋势情景预测（必须是条件情景而非确定预测）、继续持有/减仓/止损观察/分批加仓的条件式计划、关键价格观察区间和触发条件。没有足够数据的新闻/公告/板块资金/宏观消息必须列为缺失，不得编造。明确说明不构成确定性交易指令。'},{role:'user',content:JSON.stringify({generatedAt:now(),positions:data})}],45000);const created=now();await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(null,'holdings_report',JSON.stringify({model:cfg.ai_model,content,data,generatedAt:created}),created).run();return json({ok:true,model:cfg.ai_model,content,data,generatedAt:created})}catch(e){return json({error:String(e.message||e)},502)}}if(p==='/api/cron/morning')return json(await morning(db));return env.ASSETS.fetch(req)}
 export default{async fetch(req,env){const u=new URL(req.url),isApi=u.pathname.startsWith('/api/');try{return isApi?await api(req,env):await env.ASSETS.fetch(req)}catch(e){const detail=String(e?.message||e);return isApi?json({error:'Worker未处理异常',detail,path:u.pathname},500):new Response('Worker internal error',{status:500,headers:{'content-type':'text/plain;charset=utf-8'}})}},async scheduled(e,env,ctx){ctx.waitUntil(morning(env.DB))}}
