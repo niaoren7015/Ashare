@@ -504,14 +504,15 @@ async function fetchCninfoAnnouncements(code){
   catch(cninfoError){throw Error('东方财富公告失败：'+String(eastmoneyError?.message||eastmoneyError)+'；巨潮资讯备用源失败：'+String(cninfoError?.message||cninfoError))}
  }
 }
-async function fetchCninfoAnnouncementsFallback(code){
+async function fetchCninfoAnnouncementsFallback(code,options={}){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://www.cninfo.com.cn/new/disclosure/stock?stockCode='+code,'origin':'https://www.cninfo.com.cn','content-type':'application/x-www-form-urlencoded; charset=UTF-8','accept':'application/json, text/plain, */*'};
  const isSH=/^(6|9)/.test(String(code)),isBJ=/^[48]/.test(String(code));
  const column=isBJ?'bjse':isSH?'sse':'szse';
  const plates=isBJ?['bjse']:isSH?(String(code).startsWith('688')?['shkcp','sse']:['shmb','sse']):['szse'];
+ const selectedPlates=options.maxAttempts?[...new Set(plates)].slice(0,Math.max(1,options.maxAttempts)):[...new Set(plates)];
  let lastError='',lastMeta=null,rows=[];
- for(const plate of [...new Set(plates)]){
-  const body=new URLSearchParams({column,tabName:'fulltext',plate,stock:String(code),searchkey:'',secid:'',category:'',trade:'',seDate:'',sortName:'',sortType:'',pageNum:'1',pageSize:'12',isHLtitle:'true'});
+ for(const plate of selectedPlates){
+  const body=new URLSearchParams({column,tabName:'fulltext',plate,stock:String(code),searchkey:'',secid:'',category:'',trade:'',seDate:'',sortName:'',sortType:'',pageNum:'1',pageSize:String(options.pageSize||12),isHLtitle:'true'});
   const r=await fetch('https://www.cninfo.com.cn/new/hisAnnouncement/query',{method:'POST',headers,body:body.toString(),signal:AbortSignal.timeout(7000),cache:'no-store'});
   const raw=await r.text();
   lastMeta={httpStatus:r.status,contentType:r.headers.get('content-type')||'未知',responseLength:raw.length,plate};
@@ -759,7 +760,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    }).slice(0,3);
   }
   // Risk-first review of official announcements for only the three finalists. Missing coverage is UNKNOWN, never "no risk".
-  const announcementChecks=await Promise.all(results.map(async item=>cachedData(db,'announcements:'+item.code,900000,()=>fetchCninfoAnnouncements(item.code)).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
+  const announcementChecks=await Promise.all(results.map(async item=>cachedData(db,'screen-announcements:'+item.code,900000,()=>fetchCninfoAnnouncementsFallback(item.code,{maxAttempts:1,pageSize:30})).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
   for(const item of results){
    const ann=announcementChecks.find(x=>x.code===item.code), rows=ann?.data?.rows||[];
    const recent=rows.filter(x=>{const d=Date.parse(x.date||'');return Number.isFinite(d)&&Date.now()-d>=-86400000&&Date.now()-d<=30*86400000;});
@@ -877,7 +878,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   const compactPayload={...payload,actionableCount:eligible.length,marketNews:(newsResult.data?.rows||[]).slice(0,8),candidates:payload.candidates.map(x=>{const r=good.find(y=>y.code===x.stock.code);return {...x,screenScore:r?.screenScore,screenDecision:r?.screenDecision,screenEvidence:r?.screenEvidence,screenGrade:r?.screenGrade,riskAudit:r?.riskAudit,relatedNews:r?.relatedNews||[],stock:{...x.stock,flowHistory:x.stock.flowHistory?{rows:(x.stock.flowHistory.rows||[]).slice(-5),latest:x.stock.flowHistory.latest,cumulativeMainNetInflow:x.stock.flowHistory.cumulativeMainNetInflow,historyDays:x.stock.flowHistory.historyDays,period:x.stock.flowHistory.period,source:x.stock.flowHistory.source}:null},sectorContext:{...x.sectorContext,boards:(x.sectorContext?.boards||[]).slice(0,3)}};})};
   const content=await callAI(cfg,[
    {role:'system',content:'你是A股短线实战交易团队，必须把证据转化成明确行动，而不是复述数据。只允许依据输入，不能编造。风险否决优先于评分；riskAudit.veto或persistentFiveDayOutflow或technicalBroken为真时不得推荐建仓。A/B/C/D分级必须遵循输入的screenGrade，不可擅自升级。公告、解禁日期、质押比例未核验时，不得宣称风险已排除；公告接口返回的标题仅为线索，未阅读全文不等于确认事件。第一屏先给：一、总判断（可埋伏/等确认/持有观察/减仓防守/回避）；二、可执行名单0—3只，按优先级；三、每只一句“现在做什么”。如果没有合格股，必须明确写“本轮无符合准入条件的建仓标的”，绝不为凑数推荐。准入策略：资金面25分（仅至少5个有日期且非陈旧缓存的个股主力净流入历史才有效）；板块面25分（必须先验证个股板块归属，再匹配该板块有效净流入和涨跌）；量价面20分（趋势、短中期动量和量价确认；成交额榜不等于主力资金）；基本面15分（可核验的盈利/增长数据）；催化证据5分（新闻标题/摘要须匹配个股或已核验板块）；风险与拥挤度10分（过热、连续回撤、换手异常）。总分只作相对排序，不是胜率。当前后端没有抓取市场/个股新闻时，催化必须标为未核验，不能声称无催化，也不能凭模型知识补消息。股票进入观察池至少要有可验证的正向个股资金历史或正向所属板块资金证据，且技术趋势不能偏弱；否则只能列为暂不介入/观察，不得给出建仓指令。报告按顺序：1）市场状态与仓位建议（依据实际指数数据）；2）结论和动作清单；3）最多3只合格候选，每只只写“判断、为什么、介入触发、持有者怎么做、失效条件”；4）不推荐/排除原因；5）证据缺口简表。仓位纪律：单票上限5%，总仓位上限50%，节前40%；单日涨幅超过7%不允许立即建仓。建仓后若亏损达到-5%，原则上硬止损离场；仅A级且逻辑证据充分时可把上限放宽到-8%，必须解释依据。建仓后3—5个交易日没有正向催化或走势验证，减半仓并重新评估。每个推荐必须给出仓位上限、止损位和重新评估条件。默认中文、短句、人话，总长约1000—1400字。不要输出大段字段清单，不要把数据源诊断当正文主体。价格条件只能引用真实K线/均线/区间。不得承诺收益。'},
-   {role:'user',content:'请按上述准入规则完成本轮A股短线选股。若没有合格标的，明确给出空仓/等待结论。候选股数量不等于推荐数量。实际抓取数据：'+JSON.stringify({...compactPayload,selectionMethod:'证据门槛+多因子评分；候选排行只用于形成初始观察池，非直接推荐',limitations:[...payload.limitations,'市场新闻'+(newsResult.error?'抓取失败：'+newsResult.error:'已抓取；仅保留近7天且匹配个股或已核验板块的标题/摘要。')+'公告风险扫描以实际返回公告为限，质押比例和未来30天解禁尚未完成结构化验证。','只有经日期核验的5日个股资金流或已匹配的所属板块资金流，才算资金面证据。']})}
+   {role:'user',content:'请按上述准入规则完成本轮A股短线选股。若没有合格标的，明确给出空仓/等待结论。候选股数量不等于推荐数量。实际抓取数据：'+JSON.stringify({...compactPayload,selectionMethod:'证据门槛+多因子评分；候选排行只用于形成初始观察池，非直接推荐',limitations:[...payload.limitations,'市场新闻'+(newsResult.error?'抓取失败：'+newsResult.error:'已抓取；仅保留近7天且匹配个股或已核验板块的标题/摘要。')+'公告风险扫描使用巨潮资讯单板块、最多30条返回结果；质押比例和未来30天解禁日期尚未完成结构化验证。','只有经日期核验的5日个股资金流或已匹配的所属板块资金流，才算资金面证据。']})}
   ],70000,4000);
   stage='保存选股报告';
   const created=now();
