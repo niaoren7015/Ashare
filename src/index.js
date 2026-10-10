@@ -374,9 +374,10 @@ async function fetchScreenCandidates(){
  return arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:null,flow:null,marketCap:null,rankSource:'sina-turnover-fallback',primaryError:errors.join('；')})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!x.name.includes('ST')&&x.price>0).slice(0,30);
 }
 
-async function fetchStockFlowHistory(code){
+async function fetchStockFlowHistory(code,options={}){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
- const hosts=['push2his.eastmoney.com','push2.eastmoney.com','push2delay.eastmoney.com'];
+ const allHosts=['push2his.eastmoney.com','push2.eastmoney.com','push2delay.eastmoney.com'];
+ const hosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
  const parseHistory=body=>{
   const arr=body?.data?.klines;if(!Array.isArray(arr)||!arr.length)throw Error('资金流历史为空');
   const rows=arr.map(line=>{const p=String(line).split(',');return{date:p[0]||null,mainNetInflow:p[1]==null||p[1]===''?null:Number(p[1]),smallNetInflow:p[2]==null||p[2]===''?null:Number(p[2]),mediumNetInflow:p[3]==null||p[3]===''?null:Number(p[3]),largeNetInflow:p[4]==null||p[4]===''?null:Number(p[4]),superLargeNetInflow:p[5]==null||p[5]===''?null:Number(p[5]),mainNetInflowPct:p[6]==null||p[6]===''?null:Number(p[6]),unit:'CNY'}}).filter(x=>x.date&&Number.isFinite(x.mainNetInflow));
@@ -391,6 +392,7 @@ async function fetchStockFlowHistory(code){
    const parsed=parseHistory(await r.json());return{...parsed,host};
   }catch(e){errors.push(host+': '+String(e?.message||e))}
  }
+ if(options.historyOnly)throw Error('未取得有日期的多日主力资金流历史：'+errors.join('；'));
  // Current-day snapshot is an independent endpoint and must not be mistaken for multi-day history.
  for(const host of ['push2delay.eastmoney.com','push2.eastmoney.com']){
   try{
@@ -751,6 +753,23 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    item.sectorContext={boards,membershipError:boardResult?.error||null,industryFlowSource:industryFlowResult.data[0]?.source||null,industryFlowError:industryFlowResult.error||null,conceptFlowSource:conceptFlowResult.data[0]?.source||null,conceptFlowError:conceptFlowResult.error||null,sectorFlowUnavailable:!industryFlowResult.data.some(x=>Number.isFinite(x.flow))&&!conceptFlowResult.data.some(x=>Number.isFinite(x.flow))};
    const tokens=[item.name,...boards.map(b=>b.name)].map(v=>String(v||'').trim()).filter(v=>v.length>=2);
    item.relatedNews=(newsResult.data?.rows||[]).filter(n=>tokens.some(t=>String(n.title||'').includes(t)||String(n.summary||'').includes(t))).slice(0,3);
+  }
+  // A bounded, single-host 5-day flow check for the five shortlisted names. No undated snapshot fallback.
+  const candidateFlowResults=await Promise.all(results.map(async item=>cachedData(db,'screen-flow-history:'+item.code,60000,()=>fetchStockFlowHistory(item.code,{maxHosts:1,historyOnly:true})).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
+  for(const item of results){
+   const f=candidateFlowResults.find(x=>x.code===item.code);
+   const hist=f?.data;
+   if(hist&&hist.cache?.status!=='stale-fallback'&&(hist.historyDays||hist.rows?.length||0)>=5&&hist.rows?.some(x=>Number.isFinite(x.mainNetInflow))){
+    item.analysis.fundFlowHistory=hist;
+    item.analysis.fundFlowError=null;
+    item.analysis.dataQuality.flowKnown=true;
+    item.analysis.dataQuality.flowSource=hist.source||null;
+    item.analysis.dataQuality.flowHistoryDays=hist.historyDays||hist.rows.length;
+   }else{
+    item.analysis.fundFlowHistory=null;
+    item.analysis.flowHistoryError=f?.error||hist?.cache?.warning||'没有通过日期与覆盖率核验的5日主力资金流历史';
+    item.analysis.dataQuality.flowKnown=false;
+   }
   }
   // Evidence-led score: missing fields earn no points; undated flow snapshots are not capital-flow confirmation.
   for(const item of results){
