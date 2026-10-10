@@ -490,23 +490,21 @@ async function fetchSectorFlowRanks(type='industry',options={}){
 
 async function fetchStockBoards(code,options={}){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
- const allHosts=['push2.eastmoney.com','push2delay.eastmoney.com','push2his.eastmoney.com','29.push2.eastmoney.com','79.push2.eastmoney.com'];
- // Check the stock quote's explicit industry/concept fields before the legacy membership endpoint.
- try{
-  const u=new URL('https://push2.eastmoney.com/api/qt/stock/get');
-  for(const [k,v] of Object.entries({secid:secid(code),fields:'f57,f58,f127,f128,f129,f130,f131,f132',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
-  const r=await fetch(u,{headers,signal:AbortSignal.timeout(3500),cache:'no-store'});
-  if(!r.ok)throw Error('stock/get HTTP '+r.status);
-  const d=(await r.json())?.data;if(!d)throw Error('stock/get 无 data');
-  const names=[];
-  for(const [field,type] of [['f127','industry'],['f128','concept'],['f129','concept'],['f130','concept'],['f131','concept'],['f132','concept']]){
-   const raw=d[field];if(raw==null)continue;
-   const vals=String(raw).split(/[;,，、|]/).map(x=>x.trim()).filter(x=>x.length>=2&&!/^\d+$/.test(x));
-   for(const name of vals)if(!names.some(x=>x.name===name))names.push({code:null,name,type,changePct:null,source:'eastmoney-stock-get-'+field});
-  }
-  if(names.length)return names;
-  errors.push('stock/get 未返回可解析的行业/概念名称（已检查 f127-f132）');
- }catch(e){errors.push('stock/get: '+String(e?.message||e))}
+ const allHosts=['push2delay.eastmoney.com','push2.eastmoney.com','push2his.eastmoney.com','29.push2.eastmoney.com','79.push2.eastmoney.com'];
+ // The delayed cluster is tried first because push2 has intermittently returned HTTP 502 in production.
+ const quoteHosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
+ for(const host of quoteHosts.slice(0,options.maxHosts?1:2)){
+  try{
+   const u=new URL('https://'+host+'/api/qt/stock/get');
+   for(const [k,v] of Object.entries({secid:secid(code),fields:'f57,f58,f127,f116,f117,f84,f85,f189',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(3500),cache:'no-store'});
+   if(!r.ok)throw Error('stock/get '+host+' HTTP '+r.status);
+   const d=(await r.json())?.data;if(!d)throw Error('stock/get '+host+' 无 data');
+   const name=String(d.f127||'').trim();
+   if(name&&name.length>=2&&!/^\d+$/.test(name))return[{code:null,name,type:'industry',changePct:null,source:'eastmoney-stock-get-f127',verified:true}];
+   throw Error('stock/get '+host+' 未返回有效行业名称 f127');
+  }catch(e){errors.push(String(e?.message||e))}
+ }
 
  const hosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
  for(const host of hosts){
