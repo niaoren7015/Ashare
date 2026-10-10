@@ -322,6 +322,7 @@ async function fetchMarketNews(category='domestic'){
  return{source:results.filter(x=>x.rows.length).map(x=>x.rows[0].source).join('+'),category:intl?'international':'domestic',fetchedAt:now(),rows:rows.slice(0,40),sourceChecks:results.map((x,i)=>({source:i?'eastmoney':'sina',validRows:x.rows.length,error:x.error}))};
 }
 async function fetchEastmoneyStockNews(code){
+ const errors=[],headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
  // Independent fallback: getNewsByCode returns 404 in production, while infomines can return no usable article rows.
  try{
   const u=new URL('https://search-api-web.eastmoney.com/search/jsonp');
@@ -338,7 +339,6 @@ async function fetchEastmoneyStockNews(code){
   return{source:'eastmoney-stock-news-search',fetchedAt:now(),code,rows:rows.slice(0,20),primaryError:errors.join('；')};
  }catch(e){errors.push('search-api-web: '+String(e?.message||e))}
 
- const errors=[],headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
  const parseRows=(body,source)=>{
   const id=secid(code),root=body?.data??body?.result??body;
   let arr=Array.isArray(root)?root:(Array.isArray(root?.list)?root.list:(Array.isArray(root?.data)?root.data:(Array.isArray(root?.items)?root.items:(Array.isArray(root?.newsList)?root.newsList:[]))));
