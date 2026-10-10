@@ -769,12 +769,16 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const flags=[];
    if(has(/拟.*减持|计划.*减持|股东减持|减持股份|减持计划|大宗交易减持/))flags.push({type:'减持风险',severity:'high',detail:'近30天公告标题命中减持相关关键词，需核验减持计划期限及实施进度'});
    if(has(/立案调查|被中国证监会立案|证监会立案|涉嫌.*违法.*立案/)&&!has(/结案|撤销立案|终止调查/))flags.push({type:'立案风险',severity:'veto',detail:'公告标题出现立案调查线索，需核验是否已结案'});
-   if(has(/澄清公告|不涉及.*业务|未.*量产|尚未.*量产|不属实|不涉及.*概念/))flags.push({type:'概念证伪待核',severity:'high',detail:'公告标题出现澄清/未量产等关键词，需核对正文是否证伪核心题材'});
+   const conceptVeto=has(/不属实|不涉及.*概念|不涉及.*业务|未.*量产|尚未.*量产|无.*营收|没有.*营收/);
+   if(conceptVeto)flags.push({type:'概念证伪风险',severity:'veto',detail:'公告标题出现不属实/不涉及/未量产等负面题材关键词，需阅读全文确认'});
+   else if(has(/澄清公告/))flags.push({type:'概念澄清待核',severity:'high',detail:'公告标题出现澄清公告，必须核对正文是否影响核心题材逻辑'});
    const unlockRows=textRows.filter(x=>/解除限售.*上市流通|限售股.*上市流通|首次公开发行.*限售股.*上市流通|股权激励.*限售股.*上市流通/.test(x.title));
    const hist=item.analysis?.fundFlowHistory,flowRows=hist?.rows||[];
-   const fiveDayFlow=flowRows.length>=5&&flowRows.slice(-5).every(x=>Number.isFinite(x.mainNetInflow))?flowRows.slice(-5).reduce((sum,x)=>sum+x.mainNetInflow,0):null;
-   const recent3=flowRows.slice(-3).reduce((sum,x)=>sum+(Number.isFinite(x.mainNetInflow)?x.mainNetInflow:0),0);
-   const persistentOutflow=fiveDayFlow!=null&&fiveDayFlow<0&&recent3<=0;
+   const lastFive=flowRows.slice(-5);
+   const fiveDayFlow=lastFive.length>=5&&lastFive.every(x=>Number.isFinite(x.mainNetInflow))?lastFive.reduce((sum,x)=>sum+x.mainNetInflow,0):null;
+   const first2=lastFive.slice(0,2).reduce((sum,x)=>sum+(Number.isFinite(x.mainNetInflow)?x.mainNetInflow:0),0);
+   const recent3=lastFive.slice(-3).reduce((sum,x)=>sum+(Number.isFinite(x.mainNetInflow)?x.mainNetInflow:0),0);
+   const persistentOutflow=fiveDayFlow!=null&&fiveDayFlow<0&&first2<0&&recent3<0&&Math.abs(recent3)>=Math.abs(first2);
    const finRows=item.analysis?.financialSnapshot?.rows||[];
    const fin=finRows.find(x=>Number.isFinite(x.revenueGrowthPct)&&Number.isFinite(x.netProfitGrowthPct))||finRows[0]||null;
    const revenueUpProfitDown=!!(fin&&Number.isFinite(fin.revenueGrowthPct)&&Number.isFinite(fin.netProfitGrowthPct)&&fin.revenueGrowthPct>0&&fin.netProfitGrowthPct<0);
@@ -870,7 +874,10 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
     '已新增东方财富财务摘要接口，尝试读取最近5期报告的营收、净利润、ROE、每股经营现金流及资产负债率；若该接口不可用，相关指标必须标记缺失，不能推断为正常。完整财报附注与历史估值分位仍需另行核验。',
     '已尝试抓取候选股所属行业/概念板块和板块当日资金流排名；如果接口失败或未匹配到板块，必须标记缺失。当前板块流向为当日快照，尚不能证明资金连续多日增加。',
     '为控制Worker子请求预算，本轮智能选股未抓取泛市场新闻；新闻/催化不在本轮证据内，不能据此判断有或没有催化。',
-    '若候选股资金流字段为空或来自新浪涨幅榜，必须标记未知，不得推断为净流入。'
+    '若候选股资金流字段为空或来自新浪涨幅榜，必须标记未知，不得推断为净流入。',
+    '本轮尚未接入可验证的融资余额/融资净买入、股东户数变化、控股股东质押比例、机构评级目标价的结构化历史；这些项目必须标为未核验，不可假设为正常。',
+    '本轮尚未拉取外盘指数实时行情与汇率/跨境传导数据；不能凭模型记忆描述为当日外盘事实。',
+    '解禁公告仅用于发现风险线索，若未能从公告正文确认未来30天的实际上市日期，必须标记未知，不可标记“未触发”。'
    ]
   };
   stage='调用AI生成选股报告';
