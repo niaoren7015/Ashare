@@ -57,6 +57,40 @@ jobs:
           node -e "const fs=require('fs');const x=JSON.parse(fs.readFileSync('/tmp/worker-health.json','utf8'));if(x.ok!==true||x.db!==true)process.exit(1);console.log('Worker health smoke test passed:',JSON.stringify({ok:x.ok,db:x.db,version:x.version,time:x.time}))"
         env:
           WORKER_URL: https://a-share-ai-tracker.parker-f21.workers.dev
+      - name: Production smart-screen end-to-end acceptance (opt-in commit tag)
+        if: contains(github.event.head_commit.message, '[screen-e2e]')
+        timeout-minutes: 3
+        run: |
+          node <<'NODE'
+          const base = process.env.WORKER_URL;
+          (async () => {
+            const response = await fetch(base + '/api/ai/screen', {
+              method: 'POST',
+              headers: {'content-type':'application/json','cache-control':'no-cache'},
+              body: '{}',
+              signal: AbortSignal.timeout(150000)
+            });
+            const raw = await response.text();
+            let x;
+            try { x = JSON.parse(raw); } catch { throw new Error('HTTP '+response.status+' returned non-JSON: '+raw.slice(0,300)); }
+            console.log('Smart-screen response:', JSON.stringify({
+              httpStatus: response.status,
+              ok: x.ok,
+              error: x.error || null,
+              stage: x.stage || null,
+              elapsedMs: x.elapsedMs || null,
+              universe: x.marketUniverse || null,
+              analyzedCandidates: Array.isArray(x.results) ? x.results.length : null,
+              actionableCount: x.actionableCount ?? null,
+              sampleCodes: Array.isArray(x.results) ? x.results.map(r=>r.code).slice(0,8) : null
+            }));
+            if (!response.ok || x.ok !== true) throw new Error('Production smart-screen endpoint failed');
+            if (!x.marketUniverse || x.marketUniverse.validStockCount < 1000 || x.marketUniverse.coveragePassed !== true) throw new Error('Full-market coverage gate failed');
+            if (!Array.isArray(x.results) || x.results.length < 3) throw new Error('Expected at least three analyzed finalists from the broad-market scan');
+          })().catch(e => { console.error(e); process.exit(1); });
+          NODE
+        env:
+          WORKER_URL: https://a-share-ai-tracker.parker-f21.workers.dev
       - name: Production data-source smoke tests (informational)
         continue-on-error: true
         run: |
