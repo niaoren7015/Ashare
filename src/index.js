@@ -456,7 +456,7 @@ async function fetchSectorFlowRanks(type='industry',options={}){
  for(const host of hosts){
   try{
    const u=new URL('https://'+host+'/api/qt/clist/get');
-   for(const [k,v] of Object.entries({pn:'1',pz:'50',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs,fields:'f12,f14,f2,f3,f6,f62,f184',ut:'fa5fd1943c7b386f172d6893dbfba10b',_ :String(Date.now())}))u.searchParams.set(k,v);
+   for(const [k,v] of Object.entries({pn:'1',pz:'500',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs,fields:'f12,f14,f2,f3,f6,f62,f184',ut:'fa5fd1943c7b386f172d6893dbfba10b',_ :String(Date.now())}))u.searchParams.set(k,v);
    const r=await fetch(u,{headers,signal:AbortSignal.timeout(3500),cache:'no-store'});if(!r.ok)throw Error(host+' HTTP '+r.status);
    const raw=(await r.text()).trim();if(!raw)throw Error(host+' 空响应');
    let body;try{body=JSON.parse(raw)}catch{const m=raw.match(/^[^(]*\(([\s\S]*)\)\s*;?$/);if(!m)throw Error(host+' 返回非JSON/JSONP');body=JSON.parse(m[1])}
