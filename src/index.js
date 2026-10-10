@@ -369,7 +369,7 @@ async function fetchEastmoneyStockNews(code,keyword=code){
 async function fetchSinaMarketPage(page){
  const u=new URL('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData');
  for(const [k,v] of Object.entries({page:String(page),num:'100',sort:'symbol',asc:'1',node:'hs_a',_s_r_a:'page',_:'1'}))u.searchParams.set(k,v);
- const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://vip.stock.finance.sina.com.cn/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(6000),cache:'no-store'});
+ const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://vip.stock.finance.sina.com.cn/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(9000),cache:'no-store'});
  if(!r.ok)throw Error('新浪全市场股票列表第'+page+'页 HTTP '+r.status);
  const raw=(await r.text()).trim();let arr;
  try{arr=JSON.parse(raw)}catch{const m=raw.match(/\[[\s\S]*\]/);if(!m)throw Error('新浪第'+page+'页响应不是JSON数组');arr=JSON.parse(m[0])}
@@ -379,8 +379,8 @@ async function fetchSinaMarketPage(page){
 }
 async function fetchSinaMarketPageRetry(page){
  let lastError;
- for(let attempt=0;attempt<2;attempt++){
-  try{return await fetchSinaMarketPage(page)}catch(e){lastError=e;if(attempt===0)await new Promise(resolve=>setTimeout(resolve,200))}
+ for(let attempt=0;attempt<3;attempt++){
+  try{return await fetchSinaMarketPage(page)}catch(e){lastError=e;if(attempt<2)await new Promise(resolve=>setTimeout(resolve,attempt===0?300:700))}
  }
  throw Error('新浪全市场股票列表第'+page+'页重试后仍失败：'+String(lastError?.message||lastError));
 }
@@ -388,8 +388,8 @@ async function fetchScreenUniverseBatch(db,batch,sessionId){
  if(!Number.isInteger(batch)||batch<0||batch>2)throw Error('全市场股票池批次参数必须为0、1或2');
  if(typeof sessionId!=='string'||sessionId.length<8||sessionId.length>100)throw Error('缺少有效的本轮股票池同步标识');
  const pages=Array.from({length:20},(_,i)=>batch*20+i+1),items=[];
- for(let offset=0;offset<pages.length;offset+=5){
-  const chunk=await Promise.all(pages.slice(offset,offset+5).map(fetchSinaMarketPageRetry));
+ for(let offset=0;offset<pages.length;offset+=3){
+  const chunk=await Promise.all(pages.slice(offset,offset+3).map(fetchSinaMarketPageRetry));
   items.push(...chunk.flat());
  }
  const unique=[...new Map(items.map(x=>[x.code,x])).values()];
