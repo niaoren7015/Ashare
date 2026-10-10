@@ -64,11 +64,12 @@ jobs:
           node <<'NODE'
           const base = process.env.WORKER_URL;
           (async () => {
+            const universeSessionId = 'acceptance-' + Date.now().toString(36);
             for (let batch = 0; batch < 3; batch++) {
               const syncResponse = await fetch(base + '/api/screen-universe/batch?batch=' + batch, {
                 method: 'POST',
                 headers: {'content-type':'application/json','cache-control':'no-cache'},
-                body: '{}',
+                body: JSON.stringify({sessionId:universeSessionId}),
                 signal: AbortSignal.timeout(90000)
               });
               const syncRaw = await syncResponse.text();
@@ -80,7 +81,7 @@ jobs:
             const response = await fetch(base + '/api/ai/screen', {
               method: 'POST',
               headers: {'content-type':'application/json','cache-control':'no-cache'},
-              body: '{}',
+              body: JSON.stringify({universeSessionId}),
               signal: AbortSignal.timeout(150000)
             });
             const raw = await response.text();
