@@ -775,7 +775,9 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   for(const item of results){
    const a=item.analysis||{}, ind=a.indicators||{}, boards=item.sectorContext?.boards||[];
    const hist=a.fundFlowHistory;
-   const validHistory=!!(hist&&hist.period!=='snapshot-date-unverified'&&hist.cache?.status!=='stale-fallback'&&(hist.historyDays||0)>=5&&Number.isFinite(hist.cumulativeMainNetInflow));
+   const flowDateMs=Date.parse(hist?.latest?.date||hist?.rows?.at(-1)?.date||'');
+   const flowAgeMs=Date.now()-flowDateMs;
+   const validHistory=!!(hist&&hist.period!=='snapshot-date-unverified'&&hist.cache?.status!=='stale-fallback'&&(hist.historyDays||0)>=5&&Number.isFinite(hist.cumulativeMainNetInflow)&&Number.isFinite(flowDateMs)&&flowAgeMs>=-86400000&&flowAgeMs<=7*86400000);
    const flowPositive=!!(validHistory&&hist.cumulativeMainNetInflow>0);
    const matchedSector=boards.filter(b=>Number.isFinite(b.sectorFlow?.flow));
    const sectorPositive=matchedSector.some(b=>b.sectorFlow.flow>0&&Number.isFinite(b.sectorFlow.changePct)&&b.sectorFlow.changePct>0);
