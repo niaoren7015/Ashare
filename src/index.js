@@ -690,10 +690,12 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  try{
   // Hard-budget this Worker invocation: candidate ranking is primary; broad market liquidity and
   // generic news are optional context and are not fetched in the screening request.
-  const [candidates,market]=await Promise.all([
-   cachedData(db,'screen-candidates',45000,async()=>({items:await fetchScreenCandidates()})).then(x=>x.items),
+  const [candidatePayload,market]=await Promise.all([
+   cachedData(db,'screen-candidates',45000,async()=>({items:await fetchScreenCandidates()})),
    Promise.all(['000001','399001'].map(async code=>{try{return await cachedData(db,'index:'+code,20000,()=>quoteIndex(code))}catch(e){return{code,error:String(e.message||e)}}}))
   ]);
+  const candidates=candidatePayload.items||[];
+  if(candidatePayload.cache?.status==='stale-fallback')throw Error('候选排行接口本次失败，缓存数据已过期；为避免用陈旧排行生成选股建议，请稍后重试。上游错误：'+(candidatePayload.cache.warning||'未知'));
   const liquidityResult={source:null,skipped:true,note:'为控制单次Worker子请求预算，本次未单独抓取全市场流动性样本；这不代表流动性正常或异常。'};
   const newsResult={items:[],error:null,source:null,skipped:true,note:'为控制单次Worker子请求预算，本次未抓取泛市场新闻；新闻缺失不代表没有催化。'};
   if(!candidates.length)throw Error('没有取得有效候选股行情，请稍后重试');
@@ -770,14 +772,14 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    limitations:[
     '已新增东方财富财务摘要接口，尝试读取最近5期报告的营收、净利润、ROE、每股经营现金流及资产负债率；若该接口不可用，相关指标必须标记缺失，不能推断为正常。完整财报附注与历史估值分位仍需另行核验。',
     '已尝试抓取候选股所属行业/概念板块和板块当日资金流排名；如果接口失败或未匹配到板块，必须标记缺失。当前板块流向为当日快照，尚不能证明资金连续多日增加。',
-    '泛财经新闻来自已校验标题和链接的新浪财经A股资讯流与东方财富财经资讯；新闻只作为市场背景，个股催化必须由个股资讯或公告支持。',
+    '为控制Worker子请求预算，本轮智能选股未抓取泛市场新闻；新闻/催化不在本轮证据内，不能据此判断有或没有催化。',
     '若候选股资金流字段为空或来自新浪涨幅榜，必须标记未知，不得推断为净流入。'
    ]
   };
   stage='调用AI生成选股报告';
   const compactPayload={...payload,marketNews:payload.marketNews.slice(0,6),candidates:payload.candidates.map(x=>({...x,stock:{...x.stock,flowHistory:x.stock.flowHistory?{rows:(x.stock.flowHistory.rows||[]).slice(-5),latest:x.stock.flowHistory.latest,cumulativeMainNetInflow:x.stock.flowHistory.cumulativeMainNetInflow,historyDays:x.stock.flowHistory.historyDays,period:x.stock.flowHistory.period,source:x.stock.flowHistory.source}:null},sectorContext:{...x.sectorContext,boards:(x.sectorContext?.boards||[]).slice(0,3)}}))};
   const content=await callAI(cfg,[
-   {role:'system',content:'你是严谨的A股量化研究与风险控制团队。报告必须紧凑：总长度不超过约1800个汉字，每只股票不超过450字，避免长篇泛论。只根据输入数据，不得编造公司、行业归属、财报、资金流、新闻、价格或技术指标。最终必须给出恰好3只股票，按建仓观察优先级1-3排序；如果数据不足以支持三只合格标的，明确标注“观察名单/暂不建仓”，不得为凑数虚构确定性。每只必须分项说明：所属板块（只有有证据时才写；否则写待核实）、题材催化和新闻证据及关联程度、板块资金趋势（缺失则明确）、个股主力资金流单位为人民币元。必须区分5日历史与快照；只有5日历史可报告5日合计。快照若接口未给可确认交易日期，必须标注日期未核实与抓取时间，不得写成今日流入。必须给出source/host/日期依据/单位。板块资金流必须给出接口来源、板块代码、当日净流入与成交额；接口失败则明确未知。估值与基本面（区分可验证数据与缺失项）、未过度炒作证据、量价/均线/近20日区间和回撤、主要风险、建仓优先级。建仓操作必须给出基于现价和真实日K支撑/均线的条件式区间：首笔观察仓、回踩加仓条件、突破跟随条件、失效/止损条件；若K线或支撑数据缺失，不得编造具体价格，改用等待数据的条件。优先寻找正向资金、板块资金改善、基本面支撑、低拥挤且估值有安全边际的个股；若输入无法证明其中某项，要把它列为未验证而非给高分。明确避免追高，不能承诺收益。开头先总结市场环境和风险偏好，再列出三只股票，结尾列出本轮筛选数据缺口与下一步核验清单。'},
+   {role:'system',content:'你是严谨的A股量化研究与风险控制团队。报告必须紧凑：总长度不超过约1800个汉字，每只股票不超过450字，避免长篇泛论。只根据输入数据，不得编造公司、行业归属、财报、资金流、新闻、价格或技术指标。最终必须给出恰好3只股票，按建仓观察优先级1-3排序；如果数据不足以支持三只合格标的，明确标注“观察名单/暂不建仓”，不得为凑数虚构确定性。每只必须分项说明：所属板块（只有有证据时才写；否则写待核实）、题材催化和新闻证据及关联程度、板块资金趋势（缺失则明确）、个股主力资金流单位为人民币元。必须区分5日历史与快照；本轮为控制Worker子请求预算，不会逐股抓取5日资金流历史；候选榜f62若存在，只是交易日期未核实的排行快照，必须标注日期未核实与抓取时间，不得写成今日流入或5日合计。必须给出source/host/日期依据/单位。板块资金流必须给出接口来源、板块代码、当日净流入与成交额；接口失败则明确未知。估值与基本面（区分可验证数据与缺失项）、未过度炒作证据、量价/均线/近20日区间和回撤、主要风险、建仓优先级。建仓操作必须给出基于现价和真实日K支撑/均线的条件式区间：首笔观察仓、回踩加仓条件、突破跟随条件、失效/止损条件；若K线或支撑数据缺失，不得编造具体价格，改用等待数据的条件。优先寻找正向资金、板块资金改善、基本面支撑、低拥挤且估值有安全边际的个股；若输入无法证明其中某项，要把它列为未验证而非给高分。明确避免追高，不能承诺收益。开头先总结市场环境和风险偏好，再列出三只股票，结尾列出本轮筛选数据缺口与下一步核验清单。'},
    {role:'user',content:JSON.stringify(compactPayload)}
   ],70000,4000);
   stage='保存选股报告';
