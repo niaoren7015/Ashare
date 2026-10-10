@@ -65,7 +65,25 @@ async function loadHold(){let hs=await api('/api/holdings');$('#holds').innerHTM
 async function holdingsReport(){try{$('#holdReportStatus').textContent='正在读取持仓和交易流水并生成报告…';$('#holdReport').innerHTML='';const r=await api('/api/ai/holdings-report',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});$('#holdReportStatus').textContent='报告生成于 '+r.generatedAt+'；模型 '+r.model;$('#holdReport').innerHTML='<div class="notice" style="margin:12px 0;white-space:pre-wrap;line-height:1.8">'+escapeHTML(normalizeNewlines(r.content))+'</div>'}catch(e){$('#holdReportStatus').textContent='';$('#holdReport').innerHTML='<div class="notice">'+e.message+'</div>'}}
 async function trade(){try{await api('/api/holdings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:$('#tc').value,side:$('#ts').value,price:+$('#tp').value,shares:+$('#tn').value,fee:+$('#tf').value})});loadHold()}catch(e){alert(e.message)}}
 async function loadAlert(){let a=await api('/api/alerts');$('#alerts').innerHTML=a.length?a.map(x=>'<div class="notice" style="margin:8px 0"><b>['+x.level+'] '+x.title+'</b><br>'+x.detail+'<br><span class="muted">'+x.created_at+'</span></div>').join(''):'暂无预警'}
-async function screenStocks(){try{$('#screenStatus').textContent='正在扫描资金流排行、市场指数和日K线，请稍候…';$('#screenOut').innerHTML='';let r=await api('/api/ai/screen',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});$('#screenStatus').textContent='报告已生成：'+r.results.length+' 只候选股；模型 '+r.model;$('#screenOut').innerHTML='<div class="card" style="margin-top:12px"><h3>AI 荐股研究报告（按优先级排序）</h3><p class="muted">生成时间：'+r.generatedAt+'</p><div style="white-space:pre-wrap;line-height:1.8">'+escapeHTML(normalizeNewlines(r.content))+'</div><h3>候选股行情与技术数据</h3><table><tr><th>代码</th><th>名称</th><th>涨跌</th><th>近一日主力净流入（元）</th><th>所属板块</th><th>趋势</th><th>数据源</th></tr>'+r.results.map(x=>'<tr><td><a href="#" onclick="event.preventDefault();$(\'#sc\').value=\''+x.code+'\';page(\'stock\');stock()">'+x.code+'</a></td><td>'+x.name+'</td><td>'+fmt(x.changePct)+'%</td><td>'+fmt(x.analysis.fundFlowHistory?.latest?.mainNetInflow)+'</td><td>'+((x.sectorContext?.boards||[]).slice(0,2).map(b=>b.name).join(' / ')||'待核实')+'</td><td>'+x.analysis.indicators.trend+'</td><td>'+x.analysis.quote.source+' / '+(x.analysis.klineSource||'K线不可用')+' / '+(x.analysis.fundFlowHistory?.source||'资金流未知')+'</td></tr>').join('')+'</table></div>'}catch(e){$('#screenStatus').textContent='';$('#screenOut').innerHTML='<div class="notice" style="margin-top:12px">'+e.message+'</div>'}}
+async function screenStocks(){
+ try{
+  $('#screenStatus').textContent='正在读取市场新闻、资金/板块数据并核验候选股…';
+  $('#screenOut').innerHTML='';
+  const r=await api('/api/ai/screen',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+  const count=Number(r.actionableCount||0);
+  $('#screenStatus').textContent=count>0?'筛选完成：'+count+' 只通过准入条件；初始候选池 '+r.results.length+' 只。':'筛选完成：本轮没有通过资金/板块与趋势准入条件的建仓标的；请等待数据或行情改善。';
+  const tableRows=(r.results||[]).map(x=>{
+   const a=x.analysis||{},ev=x.screenEvidence||{},boards=(x.sectorContext?.boards||[]).slice(0,2).map(b=>escapeHTML(b.name)).join(' / ')||'未核验';
+   const flow=Number.isFinite(a.fundFlowHistory?.cumulativeMainNetInflow)?fmt(a.fundFlowHistory.cumulativeMainNetInflow)+' 元（5日）':'未通过5日资金流核验';
+   const decision=x.screenDecision||'仅为初筛候选';
+   return '<tr><td><a href="#" onclick="event.preventDefault();$(\'#sc\').value=\''+escapeHTML(x.code)+'\';page(\'stock\');stock()">'+escapeHTML(x.code)+'</a></td><td>'+escapeHTML(x.name||'')+'</td><td>'+fmt(x.screenScore)+'/100</td><td>'+escapeHTML(decision)+'</td><td>'+boards+'</td><td>'+flow+'</td><td>'+escapeHTML(a.indicators?.trend||'未知')+'</td></tr>';
+  }).join('');
+  $('#screenOut').innerHTML='<div class="card" style="margin-top:12px"><h3>本轮交易结论</h3><div class="ai-report-body">'+renderReportHTML(r.content)+'</div><h3 style="margin-top:22px">初筛候选池（不等于荐股名单）</h3><p class="muted">分数仅用于候选相对排序，不代表胜率。只有“进入观察池，等待交易触发”的标的才通过当前准入门槛；其余不应按推荐买入。</p><div style="overflow:auto"><table><tr><th>代码</th><th>名称</th><th>证据评分</th><th>准入判断</th><th>已核验板块</th><th>资金证据</th><th>技术趋势</th></tr>'+tableRows+'</table></div><p class="muted" style="margin-top:12px">生成时间：'+escapeHTML(r.generatedAt||'—')+'；模型：'+escapeHTML(r.model||'—')+'。新闻只在标题/摘要与个股或已核验板块匹配时作为催化证据；未匹配不等于没有催化。</p></div>';
+ }catch(e){
+  $('#screenStatus').textContent='';
+  $('#screenOut').innerHTML='<div class="notice" style="margin-top:12px">'+escapeHTML(e.message)+'</div>';
+ }
+}
 let newsCategory='domestic';
 function newsTime(v){if(v==null||v==='')return '时间未提供';const n=Number(v);const d=Number.isFinite(n)&&n>1000000000?new Date(n<100000000000?n*1000:n):new Date(v);return Number.isNaN(d.getTime())?'时间未提供':d.toLocaleString()}
 function renderNewsRows(rows){return rows.length?rows.map(x=>'<div class="notice" style="margin:9px 0"><div class="row"><b style="flex:1">'+escapeHTML(x.title||'无标题')+'</b><span class="muted">'+escapeHTML(newsTime(x.publishedAt||x.date))+'</span></div>'+(x.summary?'<p>'+escapeHTML(x.summary)+'</p>':'')+'<div class="row"><span class="muted">'+escapeHTML(x.source||x.category||'新闻')+'</span><a href="'+escapeHTML(x.url||'#')+'" target="_blank" rel="noopener noreferrer">查看原文</a></div></div>').join(''):'<div class="notice">当前没有通过有效性检查的新闻记录；请查看数据源诊断错误，不能据此断言没有相关新闻。</div>'}
