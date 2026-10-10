@@ -358,7 +358,7 @@ async function fetchSinaMarketPage(page){
  const raw=(await r.text()).trim();let arr;
  try{arr=JSON.parse(raw)}catch{const m=raw.match(/\[[\s\S]*\]/);if(!m)throw Error('新浪第'+page+'页响应不是JSON数组');arr=JSON.parse(m[0])}
  if(!Array.isArray(arr))throw Error('新浪第'+page+'页不是数组');
- return arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz|bj)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:null,flow:null,marketCap:null,rankSource:'sina-market-center-hs_a'}))
+ return arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz|bj)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:x.per==null||x.per===''||x.per==='-'?null:(Number.isFinite(Number(x.per))?Number(x.per):null),pb:x.pb==null||x.pb===''||x.pb==='-'?null:(Number.isFinite(Number(x.pb))?Number(x.pb):null),flow:null,marketCap:x.mktcap==null||x.mktcap===''||x.mktcap==='-'?null:(Number.isFinite(Number(x.mktcap))?Number(x.mktcap):null),rankSource:'sina-market-center-hs_a'}))
   .filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!/(^ST|\*ST|退$|退市)/i.test(x.name)&&Number.isFinite(x.price)&&x.price>0);
 }
 async function fetchScreenUniverseBatch(db,batch,sessionId){
