@@ -76,9 +76,11 @@ async function screenStocks(){
    const a=x.analysis||{},ev=x.screenEvidence||{},boards=(x.sectorContext?.boards||[]).slice(0,2).map(b=>escapeHTML(b.name)).join(' / ')||'未核验';
    const flow=Number.isFinite(a.fundFlowHistory?.cumulativeMainNetInflow)?fmt(a.fundFlowHistory.cumulativeMainNetInflow)+' 元（5日）':'未通过5日资金流核验';
    const decision=x.screenDecision||'仅为初筛候选';
-   return '<tr><td><a href="#" onclick="event.preventDefault();$(\'#sc\').value=\''+escapeHTML(x.code)+'\';page(\'stock\');stock()">'+escapeHTML(x.code)+'</a></td><td>'+escapeHTML(x.name||'')+'</td><td>'+fmt(x.screenScore)+'/100</td><td>'+escapeHTML(decision)+'</td><td>'+boards+'</td><td>'+flow+'</td><td>'+escapeHTML(a.indicators?.trend||'未知')+'</td></tr>';
+   const risk=x.riskAudit||{};
+   const riskText=(risk.flags||[]).map(f=>f.type).join('、')||(risk.announcementAvailable?'未发现明确标题命中（非完整风险排除）':'公告未核验');
+   return '<tr><td><a href="#" onclick="event.preventDefault();$(\'#sc\').value=\''+escapeHTML(x.code)+'\';page(\'stock\');stock()">'+escapeHTML(x.code)+'</a></td><td>'+escapeHTML(x.name||'')+'</td><td>'+escapeHTML(x.screenGrade||'—')+'</td><td>'+fmt(x.screenScore)+'/100</td><td>'+escapeHTML(decision)+'</td><td>'+boards+'</td><td>'+flow+'</td><td>'+escapeHTML(a.indicators?.trend||'未知')+'</td><td>'+escapeHTML(riskText)+'</td></tr>';
   }).join('');
-  $('#screenOut').innerHTML='<div class="card" style="margin-top:12px"><h3>本轮交易结论</h3><div class="ai-report-body">'+renderReportHTML(r.content)+'</div><h3 style="margin-top:22px">初筛候选池（不等于荐股名单）</h3><p class="muted">分数仅用于候选相对排序，不代表胜率。只有“进入观察池，等待交易触发”的标的才通过当前准入门槛；其余不应按推荐买入。</p><div style="overflow:auto"><table><tr><th>代码</th><th>名称</th><th>证据评分</th><th>准入判断</th><th>已核验板块</th><th>资金证据</th><th>技术趋势</th></tr>'+tableRows+'</table></div><p class="muted" style="margin-top:12px">生成时间：'+escapeHTML(r.generatedAt||'—')+'；模型：'+escapeHTML(r.model||'—')+'。新闻只在标题/摘要与个股或已核验板块匹配时作为催化证据；未匹配不等于没有催化。</p></div>';
+  $('#screenOut').innerHTML='<div class="card" style="margin-top:12px"><h3>本轮交易结论</h3><div class="ai-report-body">'+renderReportHTML(r.content)+'</div><h3 style="margin-top:22px">初筛候选池（不等于荐股名单）</h3><p class="muted">分数仅用于候选相对排序，不代表胜率。只有“进入观察池，等待交易触发”的标的才通过当前准入门槛；其余不应按推荐买入。</p><div style="overflow:auto"><table><tr><th>代码</th><th>名称</th><th>评级</th><th>证据评分</th><th>准入判断</th><th>已核验板块</th><th>资金证据</th><th>技术趋势</th><th>风险排查</th></tr>'+tableRows+'</table></div><p class="muted" style="margin-top:12px">生成时间：'+escapeHTML(r.generatedAt||'—')+'；模型：'+escapeHTML(r.model||'—')+'。新闻只在标题/摘要与个股或已核验板块匹配时作为催化证据；未匹配不等于没有催化。</p></div>';
  }catch(e){
   $('#screenStatus').textContent='';
   $('#screenOut').innerHTML='<div class="notice" style="margin-top:12px">'+escapeHTML(e.message)+'</div>';
