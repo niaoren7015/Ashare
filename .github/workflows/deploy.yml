@@ -46,6 +46,7 @@ jobs:
           console.log('Frontend inline JavaScript syntax passed');
           NODE
       - name: Deploy Worker and static assets
+        id: deploy_worker
         run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -117,6 +118,7 @@ jobs:
         env:
           WORKER_URL: https://a-share-ai-tracker.parker-f21.workers.dev
       - name: Production data-source smoke tests (informational)
+        if: always() && steps.deploy_worker.outcome == 'success'
         continue-on-error: true
         run: |
           node <<'NODE'
