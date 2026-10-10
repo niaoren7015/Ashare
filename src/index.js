@@ -350,44 +350,44 @@ async function fetchEastmoneyStockNews(code){
  }catch(e){errors.push('infomines: '+String(e?.message||e))}
  throw Error('东方财富个股新闻接口均未通过有效性校验：'+errors.join('；'));
 }
-// Full-market scan is accepted only after broad coverage validation.
-async function fetchScreenCandidates(){
- const headers={'user-agent':'Mozilla/5.0','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
- const errors=[],hosts=['29.push2.eastmoney.com','17.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com'],pageSize=500,maxPages=12;
- for(const host of hosts){
-  try{
-   const parseBody=body=>{
-    const diff=body?.data?.diff,list=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
-    return list.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:Number(x.f2),changePct:Number(x.f3),amount:Number(x.f6),turnover:Number(x.f8),pe:Number(x.f9),flow:null,marketCap:Number(x.f20),rankSource:'eastmoney-full-market-amount-'+host}))
-     .filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!/(^ST|\*ST|退$|退市)/i.test(x.name)&&Number.isFinite(x.price)&&x.price>0);
-   };
-   const fetchPage=async pn=>{
-    const u=new URL('https://'+host+'/api/qt/clist/get');
-    for(const [k,v] of Object.entries({pn:String(pn),pz:String(pageSize),po:'1',np:'1',fltt:'2',invt:'2',fid:'f6',fs:'m:0+t:6,m:0+t:80,m:0+t:81,m:1+t:2,m:1+t:23',fields:'f12,f14,f2,f3,f5,f6,f7,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
-    const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});
-    if(!r.ok)throw Error(host+' 第'+pn+'页 HTTP '+r.status);
-    const body=await r.json();if(!body?.data||!body.data.diff)throw Error(host+' 第'+pn+'页响应缺少data.diff');
-    return {body,rows:parseBody(body)};
-   };
-   const first=await fetchPage(1),total=Number(first.body?.data?.total||first.body?.data?.totalCount||0);
-   const pages=Math.min(maxPages,Math.max(1,total?Math.ceil(total/pageSize):maxPages));
-   const rest=await Promise.all(Array.from({length:pages-1},(_,i)=>fetchPage(i+2)));
-   const unique=[...new Map([...first.rows,...rest.flatMap(x=>x.rows)].map(x=>[x.code,x])).values()];
-   const expected=total>0?Math.min(total,pages*pageSize):Math.min(maxPages*pageSize,5000);
-   if(unique.length<1000||(total>0&&unique.length<expected*0.8))throw Error(host+' 全市场分页覆盖不足：有效 '+unique.length+' 只，预期约 '+expected+' 只');
-   return unique;
-  }catch(e){errors.push(String(e?.message||e))}
+async function fetchSinaMarketPage(page){
+ const u=new URL('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData');
+ for(const [k,v] of Object.entries({page:String(page),num:'100',sort:'symbol',asc:'1',node:'hs_a',_s_r_a:'page',_:'1'}))u.searchParams.set(k,v);
+ const r=await fetch(u,{headers:{'user-agent':'Mozilla/5.0','referer':'https://vip.stock.finance.sina.com.cn/','accept':'application/json,text/plain,*/*'},signal:AbortSignal.timeout(6000),cache:'no-store'});
+ if(!r.ok)throw Error('新浪全市场股票列表第'+page+'页 HTTP '+r.status);
+ const raw=(await r.text()).trim();let arr;
+ try{arr=JSON.parse(raw)}catch{const m=raw.match(/\[[\s\S]*\]/);if(!m)throw Error('新浪第'+page+'页响应不是JSON数组');arr=JSON.parse(m[0])}
+ if(!Array.isArray(arr))throw Error('新浪第'+page+'页不是数组');
+ return arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz|bj)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:null,flow:null,marketCap:null,rankSource:'sina-market-center-hs_a'}))
+  .filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!/(^ST|\*ST|退$|退市)/i.test(x.name)&&Number.isFinite(x.price)&&x.price>0);
+}
+async function fetchScreenUniverseBatch(db,batch){
+ if(!Number.isInteger(batch)||batch<0||batch>2)throw Error('全市场股票池批次参数必须为0、1或2');
+ const pages=Array.from({length:20},(_,i)=>batch*20+i+1),items=[];
+ for(let offset=0;offset<pages.length;offset+=5){
+  const chunk=await Promise.all(pages.slice(offset,offset+5).map(fetchSinaMarketPage));
+  items.push(...chunk.flat());
  }
- try{
-  const u=new URL('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData');
-  for(const [k,v] of Object.entries({page:'1',num:'5000',sort:'amount',asc:'0',node:'hs_a',symbol:'',_:'1'}))u.searchParams.set(k,v);
-  const r=await fetch(u,{headers:{...headers,'referer':'https://finance.sina.com.cn/'},signal:AbortSignal.timeout(5000),cache:'no-store'});
-  if(!r.ok)throw Error('新浪全市场行情 HTTP '+r.status);
-  const raw=await r.text();let arr;try{arr=JSON.parse(raw)}catch{const m=raw.match(/\[[\s\S]*\]/);if(!m)throw Error('新浪行情响应不是JSON数组');arr=JSON.parse(m[0])}
-  const unique=[...new Map(arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz|bj)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:null,flow:null,marketCap:null,rankSource:'sina-full-market-amount-fallback',primaryError:errors.join('；')})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!/(^ST|\*ST|退$|退市)/i.test(x.name)&&Number.isFinite(x.price)&&x.price>0).map(x=>[x.code,x])).values()];
-  if(unique.length<1000)throw Error('新浪备用行情仅返回 '+unique.length+' 只有效股票');
-  return unique.slice(0,5000);
- }catch(e){throw Error('全市场股票清单未通过覆盖与有效性校验。东方财富：'+errors.join('；')+'；新浪备用源：'+String(e?.message||e))}
+ const unique=[...new Map(items.map(x=>[x.code,x])).values()];
+ if(unique.length<500)throw Error('新浪全市场股票池第'+(batch+1)+'批有效股票仅'+unique.length+'只，未通过分页数据校验');
+ const payload={batch,source:'sina-market-center-hs_a',pages:pages.length,pageStart:pages[0],pageEnd:pages.at(-1),validStockCount:unique.length,items:unique,fetchedAt:now()};
+ const updatedAt=now(),expiresAt=Date.now()+12*60*60*1000;
+ await db.prepare('INSERT INTO data_cache(cache_key,payload,updated_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at,expires_at=excluded.expires_at')
+  .bind('screen-universe-batch:'+batch,JSON.stringify(payload),updatedAt,expiresAt).run();
+ return {ok:true,batch,source:payload.source,pages:payload.pages,pageStart:payload.pageStart,pageEnd:payload.pageEnd,validStockCount:unique.length,fetchedAt:payload.fetchedAt};
+}
+async function fetchScreenCandidates(db){
+ const batches=[];
+ for(let batch=0;batch<3;batch++){
+  const row=await db.prepare('SELECT payload,expires_at FROM data_cache WHERE cache_key=?').bind('screen-universe-batch:'+batch).first();
+  if(!row||Number(row.expires_at)<=Date.now())throw Error('全市场股票池尚未完整同步或已过期，请先重新刷新全市场股票池');
+  let data;try{data=JSON.parse(row.payload)}catch{throw Error('全市场股票池第'+(batch+1)+'批缓存损坏，请重新刷新')}
+  if(!Array.isArray(data.items)||!data.items.length)throw Error('全市场股票池第'+(batch+1)+'批缺少有效数据，请重新刷新');
+  batches.push(data);
+ }
+ const items=[...new Map(batches.flatMap(x=>x.items).map(x=>[x.code,x])).values()];
+ if(items.length<4500)throw Error('全市场股票池覆盖不足：当前仅'+items.length+'只有效股票，最低验收门槛为4500只；拒绝用局部榜单冒充全市场扫描');
+ return {items,source:'sina-market-center-hs_a',validStockCount:items.length,minimumCoverage:4500,coveragePassed:true,fetchedAtRange:{from:batches[0].fetchedAt,to:batches[2].fetchedAt},pagesFetched:batches.reduce((n,x)=>n+x.pages,0)};
 }
 
 async function fetchStockFlowHistory(code,options={}){
@@ -702,18 +702,24 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(code,'ai_analysis',JSON.stringify({model:cfg.ai_model,content,generatedAt:created,source:a}),created).run();
   return json({ok:true,code,model:cfg.ai_model,generatedAt:created,content,ruleAnalysis:a,elapsedMs:Date.now()-started});
  }catch(e){return json({error:String(e.message||e),stage:'个股AI分析：抓取/校验/生成',elapsedMs:Date.now()-started},502)}
-}if(p==='/api/ai/screen'&&req.method==='POST'){
+}if(p==='/api/screen-universe/batch'&&req.method==='POST'){
+ try{
+  const batch=Number(new URL(req.url).searchParams.get('batch'));
+  return json(await fetchScreenUniverseBatch(db,batch));
+ }catch(e){return json({ok:false,error:String(e?.message||e),stage:'同步全市场股票池'},502)}
+}
+if(p==='/api/ai/screen'&&req.method==='POST'){
  const cfg=await getAIConfig(db);
  if(!cfg.ai_endpoint||!cfg.ai_api_key||!cfg.ai_model)return json({error:'请先在设置中配置 AI Endpoint、API Key 和 Model'},400);
  const started=Date.now();let stage='读取候选行情、指数和资讯';
  try{
   // Broad-market scan uses bounded 500-row pages; only four finalists receive deep per-stock checks to protect Worker subrequest limits.
   const [candidatePayload,market]=await Promise.all([
-   cachedData(db,'screen-candidates',45000,async()=>({items:await fetchScreenCandidates()})),
+   fetchScreenCandidates(db),
    Promise.all(['000001','399001'].map(async code=>{try{return await cachedData(db,'index:'+code,20000,()=>quoteIndex(code))}catch(e){return{code,error:String(e.message||e)}}}))
   ]);
   const candidates=candidatePayload.items||[];
-  if(candidatePayload.cache?.status==='stale-fallback')throw Error('候选排行接口本次失败，缓存数据已过期；为避免用陈旧排行生成选股建议，请稍后重试。上游错误：'+(candidatePayload.cache.warning||'未知'));
+  if(candidatePayload.validStockCount<4500||candidatePayload.coveragePassed!==true)throw Error('全市场股票池覆盖验收未通过，拒绝生成局部候选报告');
   const liquidityResult={source:null,skipped:true,note:'为控制单次Worker子请求预算，本次未单独抓取全市场流动性样本；这不代表流动性正常或异常。'};
   const newsResult=await cachedData(db,'market-news:domestic',60000,()=>fetchMarketNews('domestic')).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)}));
   if(!candidates.length)throw Error('没有取得有效候选股行情，请稍后重试');
@@ -874,7 +880,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const financeErrors=good.map(x=>x.analysis.financialSnapshotError).filter(Boolean).slice(0,3).join(' | ');
    if(indexCount<2||quoteCount<3||klineCount<2||financeCount<2)throw Error('基础行情/技术/财务数据质量门槛未通过，暂不生成误导性报告。可用数据：指数 '+indexCount+'/2，个股实时行情 '+quoteCount+'/'+good.length+'，至少20日有效日K '+klineCount+'/'+good.length+'，财务摘要 '+financeCount+'/'+good.length+'。资金流当前 '+flowCount+'/3（资金流不是报告生成的硬门槛，缺失时会明确标注未知）。资金流错误：'+(flowErrors||'无')+'。财务错误：'+(financeErrors||'无')+'。市场流动性源：'+(liquidityResult.error||liquidityResult.source||'未知')+'。');
   const payload={
-   generatedAt:now(),elapsedMs:Date.now()-started,marketUniverse:{source:candidates[0]?.rankSource||null,validStockCount:candidates.length,scope:'全市场股票清单初筛；成交额仅作流动性代理，不代表主力资金',minimumCoverage:1000,coveragePassed:candidates.length>=1000,scanDate:now()},marketIndices:market,marketLiquidity:liquidityResult,
+   generatedAt:now(),elapsedMs:Date.now()-started,marketUniverse:{source:candidatePayload.source||candidates[0]?.rankSource||null,validStockCount:candidates.length,scope:'新浪全市场股票列表分页同步；成交额仅作流动性代理，不代表主力资金',minimumCoverage:4500,coveragePassed:candidatePayload.coveragePassed===true,scanDate:now(),fetchedAtRange:candidatePayload.fetchedAtRange,pagesFetched:candidatePayload.pagesFetched},marketIndices:market,marketLiquidity:liquidityResult,
    marketNews:(newsResult.data?.rows||[]).slice(0,12),newsFetchError:newsResult.error,
    selectionMethod:'全市场行情池 → 日涨幅/换手/估值/成交额因子排序 → 前4名深入核验日K、财务、所属板块、带日期的5日资金历史和公告风险；成交额不等于主力资金',
    candidates:good.map(x=>({
