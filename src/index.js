@@ -728,14 +728,14 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   const ranked=candidates.map(c=>{
    const flowKnown=Number.isFinite(c.flow),peKnown=Number.isFinite(c.pe)&&c.pe>0;
    const ch=Number.isFinite(c.changePct)?c.changePct:0,turn=Number.isFinite(c.turnover)?c.turnover:0;
-   let score=0;
+   const amountScore=Number.isFinite(c.amount)&&c.amount>0?Math.min(5,Math.max(0,(Math.log10(c.amount)-6)*0.8)):0;
+   let score=amountScore;
    if(flowKnown)score+=c.flow>0?3:c.flow<0?-4:0;
    if(peKnown)score+=c.pe<=20?2:c.pe<=35?1:c.pe>80?-2:0;
    if(ch>=-3&&ch<=2)score+=3;else if(ch>2&&ch<=5)score+=1;else if(ch>5)score-=3;else if(ch< -8)score-=3;else if(ch< -3)score+=0.5;
    if(turn>=0.5&&turn<=5)score+=1.5;else if(turn>12)score-=2;
-   if(Number.isFinite(c.amount)&&c.amount>1000000000)score+=2;else if(Number.isFinite(c.amount)&&c.amount>300000000)score+=1;
-   return {...c,preScore:Number(score.toFixed(2))};
-  }).sort((a,b)=>b.preScore-a.preScore);
+   return {...c,preScore:Number(score.toFixed(3)),amountLiquidityScore:Number(amountScore.toFixed(2))};
+  }).sort((a,b)=>b.preScore-a.preScore||(Number(b.amount)||0)-(Number(a.amount)||0)||(Number(b.turnover)||0)-(Number(a.turnover)||0));
   // Expensive history and risk checks are limited to four finalists selected from the broad-market scan.
   const flowChecked=ranked.slice(0,4).map(c=>({...c,flowHistory:null,flowHistoryError:'全市场行情初筛不含可验证个股资金流；进入深入分析后单独核验带日期的资金流历史'}));
   const chosen=flowChecked.slice(0,4);
