@@ -674,7 +674,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    }
   };
   const messages=[
-   {role:'system',content:'你是严谨的A股短线量化研究与风险控制分析师。只能依据输入数据，不得把缺失值当作0/正常，不得编造新闻、公告、行业、财务、资金流、机构持仓、龙虎榜、股东变化、质押或支撑位。先分清已核验事实、来源线索、量化推断和缺失项。报告按此结构输出：1）交易结论与信号强度（偏强观察/中性等待/偏弱回避，不得把分数写成胜率）；2）短线量化因子面板：趋势MA5/10/20/60与MA20斜率、5/10/20日收益、20日高低点及距高点回撤、量比（只有成交量覆盖充分才可用）、RSI14、ATR14及ATR比例、评分因子组覆盖与技术指标覆盖必须分开报告：knownFactorCount仅代表最多5个评分组（趋势、动量、量价确认、波动、形态）中有多少组可评估，禁止把它单独写成“技术因子覆盖率5/5”；应同时引用technicalIndicatorCoverage.available/total作为技术指标数值覆盖率；综合分不是胜率。解释各因子冲突，不能只凭单因子下结论；3）行业/题材与催化（必须有个股相关证据，泛市场新闻只可作为大盘背景）；4）资金流（注明来源、单位、日期/期间；日期不明的快照不得称今日流入；stale-fallback陈旧缓存必须标为stale/未通过本次核验，不可与validated并列；接口失败不得解读为资金中性）；5）财务与估值（注明报告期和原始字段，缺字段就不推断安全边际；亏损原因仅引用财报/公告明确披露）；6）官方公告和新闻（公告标题不是公告全文，提供原文链接）；7）条件式交易计划（观察触发、回踩确认、突破确认、失效条件、仓位与止损逻辑；具体价格只可来自真实K线/均线/区间，不可编造；若数据不足则只给条件不给价格）；8）风险清单；9）数据来源与逐项状态。短线因子是研究信号而非收益保证；结合A股短期反转、动量状态依赖、流动性和波动风险，不得假定任何因子恒定有效。明确不承诺收益。'},
+   {role:'system',content:'你是A股短线操盘与风险控制分析师。你的工作不是把数据念给用户听，而是做判断并给操作方案。只根据输入，不编造事实。报告控制在约900—1300字，先给结论，不要开头铺陈数据。固定结构：\n## 先说结论\n用一句话明确“可埋伏小仓/等待信号/持有观察/减仓防守/回避”，给出判断强度（高/中/低）和最关键理由。\n## 现在怎么做\n分“空仓者”和“已有持仓者”给明确动作；空仓者说明现在是否值得关注、什么条件才考虑首笔；持仓者说明继续持有/减仓/止损观察的条件；若数据不足，直说暂不动作。\n## 关键触发价与失效条件\n最多列3个关键价位或区间，必须来自真实K线、均线或近期高低点；没有可靠数据就不给数字。写清触发后做什么，以及跌破/失败后怎么办。仓位建议保守、条件化，不把单一信号当买点。\n## 为什么这样判断\n用最多4条人话解释：资金方向、所属板块强弱、量价趋势、公告/新闻催化、基本面估值。只写本轮真正核验到且影响决策的证据；板块归属不明、资金流缺失、新闻未抓取都必须明确说“未核验”，不能用模型常识补全。陈旧缓存、日期未核实快照不能当作当前资金方向。\n## 什么情况会推翻判断\n列出最重要的2—3个风险/反向信号。\n## 证据可信度\n最后用一行说明行情、K线、资金、板块、公告/新闻哪些可靠、哪些缺失；详细源错误不要堆在正文，除非它直接改变操作结论。禁止逐项抄录所有因子，禁止用“观察优先级”掩盖没有资金/板块依据，禁止把综合分称作胜率。输出简洁、直接、可执行；不构成收益保证。'},
    {role:'user',content:'请分析A股个股 '+code+'。以下是后端实际抓取数据；null/空数组表示缺失，不得补猜。'+JSON.stringify({generatedAt:now(),analysis:a,financialSnapshot:a.financialSnapshot,financialError:a.financialError,fundFlow:a.fundFlow,fundFlowError:a.fundFlowError,sectorContext:a.sectorContext,officialAnnouncements:a.officialAnnouncements,officialAnnouncementsError:a.officialAnnouncementsError,relatedNews:a.relatedNews,recentMarketNews:a.recentMarketNews,newsFetchError:a.newsFetchError,sourceAudit:a.dataCompleteness.sourceAudit,importantDataPolicy:'当前没有接入可验证的机构持仓、龙虎榜明细、股东增减持/质押结构化历史；不要声称已查到。请把巨潮公告标题作为待核验线索，不要当作公告全文。'} )}
   ];
   if(b.stream===true)return streamAIResponse(cfg,messages,async({content,generatedAt})=>{await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(code,'ai_analysis',JSON.stringify({model:cfg.ai_model,content,generatedAt,source:a}),generatedAt).run()});
@@ -750,6 +750,38 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const boards=(boardResult?.data||[]).map(b=>({...b,sectorFlow:sectorMap.get(b.code)||null}));
    item.sectorContext={boards,membershipError:boardResult?.error||null,industryFlowSource:industryFlowResult.data[0]?.source||null,industryFlowError:industryFlowResult.error||null,conceptFlowSource:conceptFlowResult.data[0]?.source||null,conceptFlowError:conceptFlowResult.error||null,sectorFlowUnavailable:!industryFlowResult.data.some(x=>Number.isFinite(x.flow))&&!conceptFlowResult.data.some(x=>Number.isFinite(x.flow))};
   }
+  // Evidence-led score: missing fields earn no points; undated flow snapshots are not capital-flow confirmation.
+  for(const item of results){
+   const a=item.analysis||{}, ind=a.indicators||{}, boards=item.sectorContext?.boards||[];
+   const hist=a.fundFlowHistory;
+   const validHistory=!!(hist&&hist.period!=='snapshot-date-unverified'&&hist.cache?.status!=='stale-fallback'&&(hist.historyDays||0)>=5&&Number.isFinite(hist.cumulativeMainNetInflow));
+   const flowPositive=!!(validHistory&&hist.cumulativeMainNetInflow>0);
+   const matchedSector=boards.filter(b=>Number.isFinite(b.sectorFlow?.flow));
+   const sectorPositive=matchedSector.some(b=>b.sectorFlow.flow>0&&Number.isFinite(b.sectorFlow.changePct)&&b.sectorFlow.changePct>0);
+   const sectorNegative=matchedSector.length>0&&matchedSector.every(b=>b.sectorFlow.flow<0);
+   const finRows=a.financialSnapshot?.rows||[];
+   const fin=finRows.find(x=>Number.isFinite(x.netProfit))||null;
+   const fundamentalPositive=!!(fin&&Number.isFinite(fin.netProfit)&&fin.netProfit>0);
+   const technicalPositive=ind.trend==='偏强';
+   const shortMomentum=Number.isFinite(ind.return5dPct)&&ind.return5dPct>0&&Number.isFinite(ind.return20dPct)&&ind.return20dPct>-5;
+   const overheating=(Number.isFinite(item.changePct)&&item.changePct>=7)||(Number.isFinite(item.turnover)&&item.turnover>15);
+   let score=0;
+   if(flowPositive)score+=25;
+   if(sectorPositive)score+=25;
+   if(technicalPositive)score+=12;
+   if(shortMomentum)score+=8;
+   if(fundamentalPositive)score+=10;
+   if(Number.isFinite(item.amount)&&item.amount>300000000)score+=5;
+   if(!overheating)score+=5;
+   if(sectorNegative)score-=10;
+   if(Number.isFinite(ind.return20dPct)&&ind.return20dPct<-12)score-=10;
+   score=Math.max(0,Math.min(100,score));
+   const hasCapitalEvidence=flowPositive||sectorPositive;
+   const qualified=hasCapitalEvidence&&technicalPositive&&!overheating&&score>=40;
+   item.screenScore=score;
+   item.screenDecision=qualified?'进入观察池，等待交易触发':'不具备建仓条件';
+   item.screenEvidence={validFiveDayStockFlow:!!validHistory,positiveFiveDayStockFlow:flowPositive,matchedSectorCount:matchedSector.length,positiveSectorFlow:sectorPositive,negativeSectorFlow:sectorNegative,technicalTrend:ind.trend||'未知',shortMomentumPositive:shortMomentum,fundamentalProfitPositive:fundamentalPositive,overheating,qualified};
+  }
   const good=results.filter(x=>x.ok);
   if(!good.length)throw Error('三只候选股均未能完成基础数据核验');
    const indexCount=market.filter(x=>x&&Number.isFinite(x.price)&&x.price>0).length;
@@ -777,15 +809,16 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    ]
   };
   stage='调用AI生成选股报告';
-  const compactPayload={...payload,marketNews:payload.marketNews.slice(0,6),candidates:payload.candidates.map(x=>({...x,stock:{...x.stock,flowHistory:x.stock.flowHistory?{rows:(x.stock.flowHistory.rows||[]).slice(-5),latest:x.stock.flowHistory.latest,cumulativeMainNetInflow:x.stock.flowHistory.cumulativeMainNetInflow,historyDays:x.stock.flowHistory.historyDays,period:x.stock.flowHistory.period,source:x.stock.flowHistory.source}:null},sectorContext:{...x.sectorContext,boards:(x.sectorContext?.boards||[]).slice(0,3)}}))};
+  const eligible=good.filter(x=>x.screenEvidence?.qualified).sort((a,b)=>(b.screenScore||0)-(a.screenScore||0));
+  const compactPayload={...payload,actionableCount:eligible.length,marketNews:[],candidates:good.map(x=>({...x,stock:{...x.stock,flowHistory:x.stock.flowHistory?{rows:(x.stock.flowHistory.rows||[]).slice(-5),latest:x.stock.flowHistory.latest,cumulativeMainNetInflow:x.stock.flowHistory.cumulativeMainNetInflow,historyDays:x.stock.flowHistory.historyDays,period:x.stock.flowHistory.period,source:x.stock.flowHistory.source}:null},sectorContext:{...x.sectorContext,boards:(x.sectorContext?.boards||[]).slice(0,3)}}))};
   const content=await callAI(cfg,[
-   {role:'system',content:'你是严谨的A股量化研究与风险控制团队。报告必须紧凑：总长度不超过约1800个汉字，每只股票不超过450字，避免长篇泛论。只根据输入数据，不得编造公司、行业归属、财报、资金流、新闻、价格或技术指标。最终必须给出恰好3只股票，按建仓观察优先级1-3排序；如果数据不足以支持三只合格标的，明确标注“观察名单/暂不建仓”，不得为凑数虚构确定性。每只必须分项说明：所属板块（只有有证据时才写；否则写待核实）、题材催化和新闻证据及关联程度、板块资金趋势（缺失则明确）、个股主力资金流单位为人民币元。必须区分5日历史与快照；本轮为控制Worker子请求预算，不会逐股抓取5日资金流历史；候选榜f62若存在，只是交易日期未核实的排行快照，必须标注日期未核实与抓取时间，不得写成今日流入或5日合计。必须给出source/host/日期依据/单位。板块资金流必须给出接口来源、板块代码、当日净流入与成交额；接口失败则明确未知。估值与基本面（区分可验证数据与缺失项）、未过度炒作证据、量价/均线/近20日区间和回撤、主要风险、建仓优先级。建仓操作必须给出基于现价和真实日K支撑/均线的条件式区间：首笔观察仓、回踩加仓条件、突破跟随条件、失效/止损条件；若K线或支撑数据缺失，不得编造具体价格，改用等待数据的条件。优先寻找正向资金、板块资金改善、基本面支撑、低拥挤且估值有安全边际的个股；若输入无法证明其中某项，要把它列为未验证而非给高分。明确避免追高，不能承诺收益。开头先总结市场环境和风险偏好，再列出三只股票，结尾列出本轮筛选数据缺口与下一步核验清单。'},
-   {role:'user',content:JSON.stringify(compactPayload)}
+   {role:'system',content:'你是A股短线实战交易团队，必须把证据转化成明确行动，而不是复述数据。只允许依据输入，不能编造。第一屏先给：一、总判断（可埋伏/等确认/持有观察/减仓防守/回避）；二、可执行名单0—3只，按优先级；三、每只一句“现在做什么”。如果没有合格股，必须明确写“本轮无符合准入条件的建仓标的”，绝不为凑数推荐。准入策略：资金面25分（仅至少5个有日期且非陈旧缓存的个股主力净流入历史才有效）；板块面25分（必须先验证个股板块归属，再匹配该板块有效净流入和涨跌）；量价面20分（趋势、短中期动量和量价确认；成交额榜不等于主力资金）；基本面15分（可核验的盈利/增长数据）；风险与拥挤度15分（过热、连续回撤、估值和波动）。总分只作相对排序，不是胜率。当前后端没有抓取市场/个股新闻时，催化必须标为未核验，不能声称无催化，也不能凭模型知识补消息。股票进入观察池至少要有可验证的正向个股资金历史或正向所属板块资金证据，且技术趋势不能偏弱；否则只能列为暂不介入/观察，不得给出建仓指令。报告按顺序：1）市场状态与仓位建议（依据实际指数数据）；2）结论和动作清单；3）最多3只合格候选，每只只写“判断、为什么、介入触发、持有者怎么做、失效条件”；4）不推荐/排除原因；5）证据缺口简表。默认中文、短句、人话，总长约1000—1400字。不要输出大段字段清单，不要把数据源诊断当正文主体。价格条件只能引用真实K线/均线/区间。不得承诺收益。'},
+   {role:'user',content:'请按上述准入规则完成本轮A股短线选股。若没有合格标的，明确给出空仓/等待结论。候选股数量不等于推荐数量。实际抓取数据：'+JSON.stringify({...compactPayload,selectionMethod:'证据门槛+多因子评分；候选排行只用于形成初始观察池，非直接推荐',limitations:[...payload.limitations,'本轮没有抓取新闻，不能评价催化方向。','只有经日期核验的5日个股资金流或已匹配的所属板块资金流，才算资金面证据。']})}
   ],70000,4000);
   stage='保存选股报告';
   const created=now();
   await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(null,'ai_screen',JSON.stringify({model:cfg.ai_model,content,results:good,market,generatedAt:created,selectionMethod:payload.selectionMethod,limitations:payload.limitations}),created).run();
-  return json({ok:true,model:cfg.ai_model,generatedAt:created,content,results:good,market,selectionMethod:payload.selectionMethod,limitations:payload.limitations,elapsedMs:Date.now()-started});
+  return json({ok:true,model:cfg.ai_model,generatedAt:created,content,results:good,actionableCount:eligible.length,market,selectionMethod:payload.selectionMethod,limitations:payload.limitations,elapsedMs:Date.now()-started});
  }catch(e){return json({error:String(e.message||e),stage,elapsedMs:Date.now()-started},502)}
 }if(p==='/api/ai/holdings-report'&&req.method==='POST'){const cfg=await getAIConfig(db);if(!cfg.ai_endpoint||!cfg.ai_api_key||!cfg.ai_model)return json({error:'请先在设置中配置 AI Endpoint、API Key 和 Model'},400);try{const hs=await db.prepare('SELECT * FROM holdings WHERE shares>0 ORDER BY updated_at DESC').run();if(!hs.results?.length)return json({error:'当前没有有效持仓，先在个股页面录入买入交易'},400);const data=await Promise.all(hs.results.map(async h=>{let current;try{current=await analyze(h.code)}catch(e){current={error:String(e.message||e)}}const trades=await db.prepare('SELECT side,price,shares,fee,traded_at,note FROM trades WHERE code=? ORDER BY traded_at ASC,id ASC').bind(h.code).run();return{holding:h,marketAndTechnical:current,trades:trades.results||[]}}));const content=await callAI(cfg,[{role:'system',content:'你是严谨的中国A股持仓风险管理分析师。根据持仓数量、成本、完整交易流水和当前行情技术数据，输出组合总览、逐股优先级、浮动盈亏与风险、趋势情景预测（必须是条件情景而非确定预测）、继续持有/减仓/止损观察/分批加仓的条件式计划、关键价格观察区间和触发条件。没有足够数据的新闻/公告/板块资金/宏观消息必须列为缺失，不得编造。明确说明不构成确定性交易指令。'},{role:'user',content:JSON.stringify({generatedAt:now(),positions:data})}],45000);const created=now();await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(null,'holdings_report',JSON.stringify({model:cfg.ai_model,content,data,generatedAt:created}),created).run();return json({ok:true,model:cfg.ai_model,content,data,generatedAt:created})}catch(e){return json({error:String(e.message||e)},502)}}if(p==='/api/cron/morning')return json(await morning(db));return env.ASSETS.fetch(req)}
 export default{async fetch(req,env){const u=new URL(req.url),isApi=u.pathname.startsWith('/api/');try{return isApi?await api(req,env):await env.ASSETS.fetch(req)}catch(e){const detail=String(e?.message||e);return isApi?json({error:'Worker未处理异常',detail,path:u.pathname},500):new Response('Worker internal error',{status:500,headers:{'content-type':'text/plain;charset=utf-8'}})}},async scheduled(e,env,ctx){ctx.waitUntil(morning(env.DB))}}
