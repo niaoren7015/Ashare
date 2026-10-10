@@ -377,12 +377,19 @@ async function fetchSinaMarketPage(page){
  return arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz|bj)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:x.per==null||x.per===''||x.per==='-'?null:(Number.isFinite(Number(x.per))?Number(x.per):null),pb:x.pb==null||x.pb===''||x.pb==='-'?null:(Number.isFinite(Number(x.pb))?Number(x.pb):null),flow:null,marketCap:x.mktcap==null||x.mktcap===''||x.mktcap==='-'?null:(Number.isFinite(Number(x.mktcap))?Number(x.mktcap):null),rankSource:'sina-market-center-hs_a'}))
   .filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!/(^ST|\*ST|退$|退市)/i.test(x.name)&&Number.isFinite(x.price)&&x.price>0);
 }
+async function fetchSinaMarketPageRetry(page){
+ let lastError;
+ for(let attempt=0;attempt<2;attempt++){
+  try{return await fetchSinaMarketPage(page)}catch(e){lastError=e;if(attempt===0)await new Promise(resolve=>setTimeout(resolve,200))}
+ }
+ throw Error('新浪全市场股票列表第'+page+'页重试后仍失败：'+String(lastError?.message||lastError));
+}
 async function fetchScreenUniverseBatch(db,batch,sessionId){
  if(!Number.isInteger(batch)||batch<0||batch>2)throw Error('全市场股票池批次参数必须为0、1或2');
  if(typeof sessionId!=='string'||sessionId.length<8||sessionId.length>100)throw Error('缺少有效的本轮股票池同步标识');
  const pages=Array.from({length:20},(_,i)=>batch*20+i+1),items=[];
  for(let offset=0;offset<pages.length;offset+=5){
-  const chunk=await Promise.all(pages.slice(offset,offset+5).map(fetchSinaMarketPage));
+  const chunk=await Promise.all(pages.slice(offset,offset+5).map(fetchSinaMarketPageRetry));
   items.push(...chunk.flat());
  }
  const unique=[...new Map(items.map(x=>[x.code,x])).values()];
