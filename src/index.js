@@ -478,7 +478,12 @@ async function fetchSectorFlowRanks(type='industry',options={}){
    let body;try{body=JSON.parse(raw)}catch{const m=raw.match(/^[^(]*\(([\s\S]*)\)\s*;?$/);if(!m)throw Error(host+' 返回非JSON/JSONP');body=JSON.parse(m[1])}
    const diff=body?.data?.diff,arr=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
    if(!arr.length)throw Error(host+' 返回空板块列表；rc='+(body?.rc??'未知'));
-   const rows=arr.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:x.f2==null?null:Number(x.f2),changePct:x.f3==null?null:Number(x.f3),amount:x.f6==null||x.f6===''?null:Number(x.f6),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),flowRatio:x.f184==null||x.f184===''?null:(Number.isFinite(Number(x.f184))?Number(x.f184):null),type,source:host,unit:'CNY'})).filter(x=>x.code&&x.name);
+   const mapRows=items=>items.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:x.f2==null?null:Number(x.f2),changePct:x.f3==null?null:Number(x.f3),amount:x.f6==null||x.f6===''?null:Number(x.f6),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),flowRatio:x.f184==null||x.f184===''?null:(Number.isFinite(Number(x.f184))?Number(x.f184):null),type,source:host,unit:'CNY'})).filter(x=>x.code&&x.name);
+   let rows=mapRows(arr);
+   // Industry lists can be paginated at 50 rows even when pz=500; fetch the next page so a stock's sector is not treated as missing merely because it ranked outside page one.
+   if(type==='industry'&&rows.length>=40&&(Number(body?.data?.total||0)>rows.length||rows.length===50)){
+    try{const u2=new URL('https://'+host+'/api/qt/clist/get');for(const [k,v] of Object.entries({pn:'2',pz:'500',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs,fields:'f12,f14,f2,f3,f6,f62,f184',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u2.searchParams.set(k,v);const r2=await fetch(u2,{headers,signal:AbortSignal.timeout(2500),cache:'no-store'});if(r2.ok){const raw2=(await r2.text()).trim();let body2;try{body2=JSON.parse(raw2)}catch{const m2=raw2.match(/^[^(]*\\(([\\s\\S]*)\\)\\s*;?$/);if(m2)body2=JSON.parse(m2[1])}const d2=body2?.data?.diff,a2=Array.isArray(d2)?d2:(d2&&typeof d2==='object'?Object.values(d2):[]);rows=[...new Map([...rows,...mapRows(a2)].map(x=>[x.code,x])).values()]}}catch(e){errors.push(host+' 行业资金第2页: '+String(e?.message||e))}
+   }
    if(!rows.length)throw Error(host+' 返回记录缺少板块代码/名称');
    const flowCount=rows.filter(x=>Number.isFinite(x.flow)).length;
    if(flowCount===0)throw Error(host+' 返回板块名称但没有有效净流入字段 f62');
