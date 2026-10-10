@@ -744,7 +744,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   const shortTermFactors=computeShortTermFactors(rows,qResult.data,k?.quality||null);
   const [stockNewsResult,marketNewsResult]=await Promise.all([
    cachedData(db,'stock-news:'+code+':'+String(q.name||code),120000,()=>fetchEastmoneyStockNews(code,q.name||code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)})),
-   cachedData(db,'market-news:domestic,60000,()=>fetchMarketNews('domestic')).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)}))
+   cachedData(db,'market-news:domestic',60000,()=>fetchMarketNews('domestic')).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e?.message||e)}))
   ]);
   const rawStockNews=stockNewsResult.data?.rows||[];
   const relatedNews=rawStockNews.filter(x=>{const title=String(x.title||''),summary=String(x.summary||''),name=String(qResult.data?.name||'').trim();return(name.length>=2&&(title.includes(name)||summary.includes(name)))||title.includes(code)||summary.includes(code)});
