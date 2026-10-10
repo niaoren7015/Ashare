@@ -361,8 +361,9 @@ async function fetchSinaMarketPage(page){
  return arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz|bj)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:null,flow:null,marketCap:null,rankSource:'sina-market-center-hs_a'}))
   .filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!/(^ST|\*ST|退$|退市)/i.test(x.name)&&Number.isFinite(x.price)&&x.price>0);
 }
-async function fetchScreenUniverseBatch(db,batch){
+async function fetchScreenUniverseBatch(db,batch,sessionId){
  if(!Number.isInteger(batch)||batch<0||batch>2)throw Error('全市场股票池批次参数必须为0、1或2');
+ if(typeof sessionId!=='string'||sessionId.length<8||sessionId.length>100)throw Error('缺少有效的本轮股票池同步标识');
  const pages=Array.from({length:20},(_,i)=>batch*20+i+1),items=[];
  for(let offset=0;offset<pages.length;offset+=5){
   const chunk=await Promise.all(pages.slice(offset,offset+5).map(fetchSinaMarketPage));
@@ -370,19 +371,20 @@ async function fetchScreenUniverseBatch(db,batch){
  }
  const unique=[...new Map(items.map(x=>[x.code,x])).values()];
  if(unique.length<500)throw Error('新浪全市场股票池第'+(batch+1)+'批有效股票仅'+unique.length+'只，未通过分页数据校验');
- const payload={batch,source:'sina-market-center-hs_a',pages:pages.length,pageStart:pages[0],pageEnd:pages.at(-1),validStockCount:unique.length,items:unique,fetchedAt:now()};
+ const payload={batch,sessionId,source:'sina-market-center-hs_a',pages:pages.length,pageStart:pages[0],pageEnd:pages.at(-1),validStockCount:unique.length,items:unique,fetchedAt:now()};
  const updatedAt=now(),expiresAt=Date.now()+12*60*60*1000;
  await db.prepare('INSERT INTO data_cache(cache_key,payload,updated_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at,expires_at=excluded.expires_at')
   .bind('screen-universe-batch:'+batch,JSON.stringify(payload),updatedAt,expiresAt).run();
  return {ok:true,batch,source:payload.source,pages:payload.pages,pageStart:payload.pageStart,pageEnd:payload.pageEnd,validStockCount:unique.length,fetchedAt:payload.fetchedAt};
 }
-async function fetchScreenCandidates(db){
+async function fetchScreenCandidates(db,sessionId){
  const batches=[];
  for(let batch=0;batch<3;batch++){
   const row=await db.prepare('SELECT payload,expires_at FROM data_cache WHERE cache_key=?').bind('screen-universe-batch:'+batch).first();
   if(!row||Number(row.expires_at)<=Date.now())throw Error('全市场股票池尚未完整同步或已过期，请先重新刷新全市场股票池');
   let data;try{data=JSON.parse(row.payload)}catch{throw Error('全市场股票池第'+(batch+1)+'批缓存损坏，请重新刷新')}
   if(!Array.isArray(data.items)||!data.items.length)throw Error('全市场股票池第'+(batch+1)+'批缺少有效数据，请重新刷新');
+  if(data.sessionId!==sessionId)throw Error('全市场股票池批次不属于本次扫描（批次'+batch+'），为避免混用不同时间的数据，请重新发起选股');
   batches.push(data);
  }
  const items=[...new Map(batches.flatMap(x=>x.items).map(x=>[x.code,x])).values()];
@@ -705,7 +707,8 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
 }if(p==='/api/screen-universe/batch'&&req.method==='POST'){
  try{
   const batch=Number(new URL(req.url).searchParams.get('batch'));
-  return json(await fetchScreenUniverseBatch(db,batch));
+  const body=await req.json().catch(()=>({}));
+  return json(await fetchScreenUniverseBatch(db,batch,String(body.sessionId||'')));
  }catch(e){return json({ok:false,error:String(e?.message||e),stage:'同步全市场股票池'},502)}
 }
 if(p==='/api/ai/screen'&&req.method==='POST'){
@@ -713,9 +716,12 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
  if(!cfg.ai_endpoint||!cfg.ai_api_key||!cfg.ai_model)return json({error:'请先在设置中配置 AI Endpoint、API Key 和 Model'},400);
  const started=Date.now();let stage='读取候选行情、指数和资讯';
  try{
-  // Broad-market scan uses bounded 500-row pages; only four finalists receive deep per-stock checks to protect Worker subrequest limits.
+  const screenRequest=await req.json().catch(()=>({}));
+  const universeSessionId=String(screenRequest.universeSessionId||'');
+  if(universeSessionId.length<8)throw Error('缺少本轮全市场股票池同步标识，请从智能选股页面重新发起');
+  // Broad-market scan uses bounded cached batches; only four finalists receive deep per-stock checks to protect Worker subrequest limits.
   const [candidatePayload,market]=await Promise.all([
-   fetchScreenCandidates(db),
+   fetchScreenCandidates(db,universeSessionId),
    Promise.all(['000001','399001'].map(async code=>{try{return await cachedData(db,'index:'+code,20000,()=>quoteIndex(code))}catch(e){return{code,error:String(e.message||e)}}}))
   ]);
   const candidates=candidatePayload.items||[];
