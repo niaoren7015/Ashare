@@ -466,7 +466,7 @@ async function fetchFinancialSnapshot(code){
 
 async function fetchSectorFlowRanks(type='industry',options={}){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
- const fs=type==='concept'?'m:90+t:3+f:!50':'m:90+t:2+f:!50';
+ const fs=type==='concept'?'m:90+t:3':'m:90+t:2';
  const allHosts=type==='concept'?['79.push2.eastmoney.com','29.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com']:['17.push2.eastmoney.com','29.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com'];
  const hosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
  for(const host of hosts){
