@@ -68,15 +68,16 @@ async function loadAlert(){let a=await api('/api/alerts');$('#alerts').innerHTML
 async function screenStocks(){
  try{
   $('#screenOut').innerHTML='';
+  const universeSessionId='screen-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
   let synced=0;
   for(let batch=0;batch<3;batch++){
    $('#screenStatus').textContent='正在同步全市场股票池：第'+(batch+1)+'/3批（每批20页）…';
-   const sync=await api('/api/screen-universe/batch?batch='+batch,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+   const sync=await api('/api/screen-universe/batch?batch='+batch,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sessionId:universeSessionId})});
    if(sync.ok!==true)throw new Error(sync.error||'全市场股票池同步失败');
    synced+=Number(sync.validStockCount||0);
   }
   $('#screenStatus').textContent='全市场股票池已同步，分页有效记录约'+synced+'条；正在核验候选股资金、板块、日K、财务与风险…';
-  const r=await api('/api/ai/screen',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+  const r=await api('/api/ai/screen',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({universeSessionId})});
   const count=Number(r.actionableCount||0);
   $('#screenStatus').textContent=count>0?'筛选完成：'+count+' 只通过准入条件；初始候选池 '+r.results.length+' 只。':'筛选完成：本轮没有通过完整风险排查与建仓准入的标的；可能是风险数据未核验或资金/板块/趋势不满足，详见报告与风险排查列。';
   const tableRows=(r.results||[]).map(x=>{
