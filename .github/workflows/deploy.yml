@@ -27,6 +27,8 @@ jobs:
           node-version: "22"
       - name: Install Wrangler
         run: npm install
+      - name: Validate Worker backend JavaScript syntax
+        run: node --check src/index.js
       - name: Validate frontend inline JavaScript syntax
         run: |
           node <<'NODE'
