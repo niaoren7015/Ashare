@@ -350,6 +350,7 @@ async function fetchEastmoneyStockNews(code){
  }catch(e){errors.push('infomines: '+String(e?.message||e))}
  throw Error('东方财富个股新闻接口均未通过有效性校验：'+errors.join('；'));
 }
+// Full-market scan is accepted only after broad coverage validation.
 async function fetchScreenCandidates(){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
  const errors=[],hosts=['29.push2.eastmoney.com','17.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com'],pageSize=500,maxPages=12;
