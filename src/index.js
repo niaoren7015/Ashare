@@ -352,29 +352,31 @@ async function fetchEastmoneyStockNews(code){
 }
 async function fetchScreenCandidates(){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'};
- const errors=[],host='push2.eastmoney.com',pageSize=500,maxPages=12;
- const parseBody=body=>{
-  const diff=body?.data?.diff,list=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
-  return list.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:Number(x.f2),changePct:Number(x.f3),amount:Number(x.f6),turnover:Number(x.f8),pe:Number(x.f9),flow:null,marketCap:Number(x.f20),rankSource:'eastmoney-full-market-amount-'+host}))
-   .filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!/(^ST|\*ST|退$|退市)/i.test(x.name)&&Number.isFinite(x.price)&&x.price>0);
- };
- const fetchPage=async pn=>{
-  const u=new URL('https://'+host+'/api/qt/clist/get');
-  for(const [k,v] of Object.entries({pn:String(pn),pz:String(pageSize),po:'1',np:'1',fltt:'2',invt:'2',fid:'f6',fs:'m:0+t:6,m:0+t:80,m:0+t:81,m:1+t:2,m:1+t:23',fields:'f12,f14,f2,f3,f5,f6,f7,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
-  const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});
-  if(!r.ok)throw Error(host+' 第'+pn+'页 HTTP '+r.status);
-  const body=await r.json();if(!body?.data||!body.data.diff)throw Error(host+' 第'+pn+'页响应缺少data.diff');
-  return {body,rows:parseBody(body)};
- };
- try{
-  const first=await fetchPage(1),total=Number(first.body?.data?.total||first.body?.data?.totalCount||0);
-  const pages=Math.min(maxPages,Math.max(1,total?Math.ceil(total/pageSize):maxPages));
-  const rest=await Promise.all(Array.from({length:pages-1},(_,i)=>fetchPage(i+2)));
-  const unique=[...new Map([...first.rows,...rest.flatMap(x=>x.rows)].map(x=>[x.code,x])).values()];
-  const expected=total>0?Math.min(total,pages*pageSize):Math.min(maxPages*pageSize,5000);
-  if(unique.length<1000||(total>0&&unique.length<expected*0.8))throw Error(host+' 全市场分页覆盖不足：有效 '+unique.length+' 只，预期约 '+expected+' 只，未通过覆盖验收');
-  return unique;
- }catch(e){errors.push(String(e?.message||e))}
+ const errors=[],hosts=['29.push2.eastmoney.com','17.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com'],pageSize=500,maxPages=12;
+ for(const host of hosts){
+  try{
+   const parseBody=body=>{
+    const diff=body?.data?.diff,list=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
+    return list.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:Number(x.f2),changePct:Number(x.f3),amount:Number(x.f6),turnover:Number(x.f8),pe:Number(x.f9),flow:null,marketCap:Number(x.f20),rankSource:'eastmoney-full-market-amount-'+host}))
+     .filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!/(^ST|\*ST|退$|退市)/i.test(x.name)&&Number.isFinite(x.price)&&x.price>0);
+   };
+   const fetchPage=async pn=>{
+    const u=new URL('https://'+host+'/api/qt/clist/get');
+    for(const [k,v] of Object.entries({pn:String(pn),pz:String(pageSize),po:'1',np:'1',fltt:'2',invt:'2',fid:'f6',fs:'m:0+t:6,m:0+t:80,m:0+t:81,m:1+t:2,m:1+t:23',fields:'f12,f14,f2,f3,f5,f6,f7,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+    const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});
+    if(!r.ok)throw Error(host+' 第'+pn+'页 HTTP '+r.status);
+    const body=await r.json();if(!body?.data||!body.data.diff)throw Error(host+' 第'+pn+'页响应缺少data.diff');
+    return {body,rows:parseBody(body)};
+   };
+   const first=await fetchPage(1),total=Number(first.body?.data?.total||first.body?.data?.totalCount||0);
+   const pages=Math.min(maxPages,Math.max(1,total?Math.ceil(total/pageSize):maxPages));
+   const rest=await Promise.all(Array.from({length:pages-1},(_,i)=>fetchPage(i+2)));
+   const unique=[...new Map([...first.rows,...rest.flatMap(x=>x.rows)].map(x=>[x.code,x])).values()];
+   const expected=total>0?Math.min(total,pages*pageSize):Math.min(maxPages*pageSize,5000);
+   if(unique.length<1000||(total>0&&unique.length<expected*0.8))throw Error(host+' 全市场分页覆盖不足：有效 '+unique.length+' 只，预期约 '+expected+' 只');
+   return unique;
+  }catch(e){errors.push(String(e?.message||e))}
+ }
  try{
   const u=new URL('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData');
   for(const [k,v] of Object.entries({page:'1',num:'5000',sort:'amount',asc:'0',node:'hs_a',symbol:'',_:'1'}))u.searchParams.set(k,v);
@@ -382,10 +384,11 @@ async function fetchScreenCandidates(){
   if(!r.ok)throw Error('新浪全市场行情 HTTP '+r.status);
   const raw=await r.text();let arr;try{arr=JSON.parse(raw)}catch{const m=raw.match(/\[[\s\S]*\]/);if(!m)throw Error('新浪行情响应不是JSON数组');arr=JSON.parse(m[0])}
   const unique=[...new Map(arr.map(x=>({code:String(x.code||String(x.symbol||'').replace(/^(sh|sz|bj)/,'')),name:String(x.name||''),price:Number(x.trade||x.price),changePct:Number(x.changepercent),amount:Number(x.amount),turnover:Number(x.turnoverratio),pe:null,flow:null,marketCap:null,rankSource:'sina-full-market-amount-fallback',primaryError:errors.join('；')})).filter(x=>/^\d{6}$/.test(x.code)&&x.name&&!/(^ST|\*ST|退$|退市)/i.test(x.name)&&Number.isFinite(x.price)&&x.price>0).map(x=>[x.code,x])).values()];
-  if(unique.length<1000)throw Error('新浪备用行情仅返回 '+unique.length+' 只有效股票，拒绝将不完整数据标记为全市场扫描');
+  if(unique.length<1000)throw Error('新浪备用行情仅返回 '+unique.length+' 只有效股票');
   return unique.slice(0,5000);
  }catch(e){throw Error('全市场股票清单未通过覆盖与有效性校验。东方财富：'+errors.join('；')+'；新浪备用源：'+String(e?.message||e))}
 }
+
 async function fetchStockFlowHistory(code,options={}){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const allHosts=['push2his.eastmoney.com','push2.eastmoney.com','push2delay.eastmoney.com'];
