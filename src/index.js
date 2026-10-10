@@ -510,7 +510,7 @@ async function fetchStockBoards(code,options={}){
  for(const host of hosts){
   try{
    const u=new URL('https://'+host+'/api/qt/slist/get');
-   for(const [k,v] of Object.entries({secid:secid(code),spt:'3',fields:'f12,f13,f14,f2,f3,f62',ut:'fa5fd1943c7b386f172d6893dbbd1d0c',_:String(Date.now())}))u.searchParams.set(k,v);
+   for(const [k,v] of Object.entries({secid:secid(code),spt:'3',pi:'0',pz:'200',po:'1',fltt:'2',invt:'2',fields:'f12,f14,f3,f128',ut:'fa5fd1943c7b386f172d6893dbbd1d0c',_:String(Date.now())}))u.searchParams.set(k,v);
    const r=await fetch(u,{headers,signal:AbortSignal.timeout(3000),cache:'no-store'});
    if(!r.ok)throw Error('HTTP '+r.status);
    const raw=(await r.text()).trim();if(!raw)throw Error('空响应');
