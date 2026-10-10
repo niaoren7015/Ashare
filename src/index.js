@@ -371,7 +371,8 @@ async function fetchScreenCandidates(){
   const pages=Math.min(maxPages,Math.max(1,total?Math.ceil(total/pageSize):maxPages));
   const rest=await Promise.all(Array.from({length:pages-1},(_,i)=>fetchPage(i+2)));
   const unique=[...new Map([...first.rows,...rest.flatMap(x=>x.rows)].map(x=>[x.code,x])).values()];
-  if(unique.length<1000)throw Error(host+' 全市场分页后仅有 '+unique.length+' 只有效股票，未通过覆盖门槛');
+  const expected=total>0?Math.min(total,pages*pageSize):Math.min(maxPages*pageSize,5000);
+  if(unique.length<1000||(total>0&&unique.length<expected*0.8))throw Error(host+' 全市场分页覆盖不足：有效 '+unique.length+' 只，预期约 '+expected+' 只，未通过覆盖验收');
   return unique;
  }catch(e){errors.push(String(e?.message||e))}
  try{
@@ -897,7 +898,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   ],70000,4000);
   stage='保存选股报告';
   const created=now();
-  await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(null,'ai_screen',JSON.stringify({model:cfg.ai_model,content,results:good,actionableCount:eligible.length,market,generatedAt:created,selectionMethod:payload.selectionMethod,limitations:payload.limitations}),created).run();
+  await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(null,'ai_screen',JSON.stringify({model:cfg.ai_model,content,results:good,actionableCount:eligible.length,market,marketUniverse:payload.marketUniverse,generatedAt:created,selectionMethod:payload.selectionMethod,limitations:payload.limitations}),created).run();
   return json({ok:true,model:cfg.ai_model,generatedAt:created,content,results:good,actionableCount:eligible.length,market,marketUniverse:payload.marketUniverse,selectionMethod:payload.selectionMethod,limitations:payload.limitations,elapsedMs:Date.now()-started});
  }catch(e){return json({error:String(e.message||e),stage,elapsedMs:Date.now()-started},502)}
 }if(p==='/api/ai/holdings-report'&&req.method==='POST'){const cfg=await getAIConfig(db);if(!cfg.ai_endpoint||!cfg.ai_api_key||!cfg.ai_model)return json({error:'请先在设置中配置 AI Endpoint、API Key 和 Model'},400);try{const hs=await db.prepare('SELECT * FROM holdings WHERE shares>0 ORDER BY updated_at DESC').run();if(!hs.results?.length)return json({error:'当前没有有效持仓，先在个股页面录入买入交易'},400);const data=await Promise.all(hs.results.map(async h=>{let current;try{current=await analyze(h.code)}catch(e){current={error:String(e.message||e)}}const trades=await db.prepare('SELECT side,price,shares,fee,traded_at,note FROM trades WHERE code=? ORDER BY traded_at ASC,id ASC').bind(h.code).run();return{holding:h,marketAndTechnical:current,trades:trades.results||[]}}));const content=await callAI(cfg,[{role:'system',content:'你是严谨的中国A股持仓风险管理分析师。根据持仓数量、成本、完整交易流水和当前行情技术数据，输出组合总览、逐股优先级、浮动盈亏与风险、趋势情景预测（必须是条件情景而非确定预测）、继续持有/减仓/止损观察/分批加仓的条件式计划、关键价格观察区间和触发条件。没有足够数据的新闻/公告/板块资金/宏观消息必须列为缺失，不得编造。明确说明不构成确定性交易指令。'},{role:'user',content:JSON.stringify({generatedAt:now(),positions:data})}],45000);const created=now();await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(null,'holdings_report',JSON.stringify({model:cfg.ai_model,content,data,generatedAt:created}),created).run();return json({ok:true,model:cfg.ai_model,content,data,generatedAt:created})}catch(e){return json({error:String(e.message||e)},502)}}if(p==='/api/cron/morning')return json(await morning(db));return env.ASSETS.fetch(req)}
