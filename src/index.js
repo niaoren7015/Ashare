@@ -716,10 +716,10 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   }).sort((a,b)=>b.preScore-a.preScore);
   // Do not fan out into per-stock history endpoints for all ranked candidates. The ranking f62
   // is only an undated snapshot; keep it labeled as such and never treat it as 5-day flow history.
-  const flowChecked=ranked.slice(0,5).map(c=>({...c,flowHistory:null,flowHistoryError:Number.isFinite(c.flow)
+  const flowChecked=ranked.slice(0,3).map(c=>({...c,flowHistory:null,flowHistoryError:Number.isFinite(c.flow)
    ?'候选榜仅含交易日期未核实的资金流快照；为控制Worker子请求预算，未追加逐股历史请求'
    :'候选榜未提供可验证资金流字段；为控制Worker子请求预算，跳过逐股资金流历史请求'}));
-  const chosen=flowChecked;
+  const chosen=flowChecked.slice(0,3);
   stage='读取最终候选股行情和日K线';
   // Fetch actual quote + daily bars for only the three finalists, avoiding the old high fan-out pattern.
   const results=await Promise.all(chosen.map(async c=>{
@@ -752,7 +752,38 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const boards=(boardResult?.data||[]).map(b=>({...b,sectorFlow:sectorMap.get(b.code)||null}));
    item.sectorContext={boards,membershipError:boardResult?.error||null,industryFlowSource:industryFlowResult.data[0]?.source||null,industryFlowError:industryFlowResult.error||null,conceptFlowSource:conceptFlowResult.data[0]?.source||null,conceptFlowError:conceptFlowResult.error||null,sectorFlowUnavailable:!industryFlowResult.data.some(x=>Number.isFinite(x.flow))&&!conceptFlowResult.data.some(x=>Number.isFinite(x.flow))};
    const tokens=[item.name,...boards.map(b=>b.name)].map(v=>String(v||'').trim()).filter(v=>v.length>=2);
-   item.relatedNews=(newsResult.data?.rows||[]).filter(n=>tokens.some(t=>String(n.title||'').includes(t)||String(n.summary||'').includes(t))).slice(0,3);
+   item.relatedNews=(newsResult.data?.rows||[]).filter(n=>{
+    const ts=Date.parse(n.publishedAt||'');
+    const recent=!Number.isFinite(ts)||Date.now()-ts<=7*86400000;
+    return recent&&tokens.some(t=>String(n.title||'').includes(t)||String(n.summary||'').includes(t));
+   }).slice(0,3);
+  }
+  // Risk-first review of official announcements for only the three finalists. Missing coverage is UNKNOWN, never "no risk".
+  const announcementChecks=await Promise.all(results.map(async item=>cachedData(db,'announcements:'+item.code,900000,()=>fetchCninfoAnnouncements(item.code)).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
+  for(const item of results){
+   const ann=announcementChecks.find(x=>x.code===item.code), rows=ann?.data?.rows||[];
+   const recent=rows.filter(x=>{const d=Date.parse(x.date||'');return Number.isFinite(d)&&Date.now()-d>=-86400000&&Date.now()-d<=30*86400000;});
+   const textRows=recent.map(x=>({title:String(x.title||''),date:x.date||null,url:x.url||null,source:x.source||ann?.data?.source||'公告接口'}));
+   const has=pattern=>textRows.some(x=>pattern.test(x.title));
+   const flags=[];
+   if(has(/拟.*减持|计划.*减持|股东减持|减持股份|减持计划|大宗交易减持/))flags.push({type:'减持风险',severity:'high',detail:'近30天公告标题命中减持相关关键词，需核验减持计划期限及实施进度'});
+   if(has(/立案调查|被中国证监会立案|证监会立案|涉嫌.*违法.*立案/)&&!has(/结案|撤销立案|终止调查/))flags.push({type:'立案风险',severity:'veto',detail:'公告标题出现立案调查线索，需核验是否已结案'});
+   if(has(/澄清公告|不涉及.*业务|未.*量产|尚未.*量产|不属实|不涉及.*概念/))flags.push({type:'概念证伪待核',severity:'high',detail:'公告标题出现澄清/未量产等关键词，需核对正文是否证伪核心题材'});
+   const unlockRows=textRows.filter(x=>/解除限售.*上市流通|限售股.*上市流通|首次公开发行.*限售股.*上市流通|股权激励.*限售股.*上市流通/.test(x.title));
+   const hist=item.analysis?.fundFlowHistory,flowRows=hist?.rows||[];
+   const fiveDayFlow=flowRows.length>=5&&flowRows.slice(-5).every(x=>Number.isFinite(x.mainNetInflow))?flowRows.slice(-5).reduce((sum,x)=>sum+x.mainNetInflow,0):null;
+   const recent3=flowRows.slice(-3).reduce((sum,x)=>sum+(Number.isFinite(x.mainNetInflow)?x.mainNetInflow:0),0);
+   const persistentOutflow=fiveDayFlow!=null&&fiveDayFlow<0&&recent3<=0;
+   const finRows=item.analysis?.financialSnapshot?.rows||[];
+   const fin=finRows.find(x=>Number.isFinite(x.revenueGrowthPct)&&Number.isFinite(x.netProfitGrowthPct))||finRows[0]||null;
+   const revenueUpProfitDown=!!(fin&&Number.isFinite(fin.revenueGrowthPct)&&Number.isFinite(fin.netProfitGrowthPct)&&fin.revenueGrowthPct>0&&fin.netProfitGrowthPct<0);
+   if(revenueUpProfitDown)flags.push({type:'增收不增利',severity:'medium',detail:'最新可用财务快照显示营收增长但净利润同比下滑'});
+   const pledgeStatus='未接入可验证的控股股东质押比例结构化数据';
+   const unlockStatus=unlockRows.length?'公告中存在限售股上市流通线索，需从正文确认实际上市日期是否在未来30天':'未能仅凭本次公告标题确认未来30天解禁情况';
+   const announcementAvailable=!!ann?.data&&rows.length>0;
+   const veto=flags.some(x=>x.severity==='veto')||flags.some(x=>x.type==='减持风险'&&/拟.*减持|计划.*减持/.test(x.detail));
+   const unknowns=[...(!announcementAvailable?['公告风险未核验']:[]),pledgeStatus,...(!unlockRows.length?['未来30天解禁未完成结构化核验']:[])];
+   item.riskAudit={source:ann?.data?.source||null,fetchedAt:ann?.data?.fetchedAt||null,announcementAvailable,announcementError:ann?.error||null,checkedRecentAnnouncementCount:textRows.length,flags,unlockClues:unlockRows,unlockStatus,pledgeStatus,fiveDayMainNetInflow:fiveDayFlow,persistentFiveDayOutflow:persistentOutflow,revenueUpProfitDown,veto,unknowns,announcementTitles:textRows.slice(0,8)};
   }
   // A bounded, single-host 5-day flow check for the five shortlisted names. No undated snapshot fallback.
   const candidateFlowResults=await Promise.all(results.map(async item=>cachedData(db,'screen-flow-history:'+item.code,60000,()=>fetchStockFlowHistory(item.code,{maxHosts:1,historyOnly:true})).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
@@ -804,10 +835,16 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    if(Number.isFinite(ind.return20dPct)&&ind.return20dPct<-12)score-=10;
    score=Math.max(0,Math.min(100,score));
    const hasCapitalEvidence=flowPositive||sectorPositive;
-   const qualified=hasCapitalEvidence&&technicalPositive&&!overheating&&score>=40;
+   const risk=item.riskAudit||{};
+   const technicalBroken=ind.trend==='偏弱'&&Number.isFinite(ind.return20dPct)&&ind.return20dPct<-5;
+   const riskVeto=!!risk.veto||!!risk.persistentFiveDayOutflow||technicalBroken||overheating;
+   const riskUnknown=!(risk.announcementAvailable)||String(risk.pledgeStatus||'').includes('未接入')||String(risk.unlockStatus||'').includes('未能');
+   const grade=riskVeto?'D':(!riskUnknown&&hasCapitalEvidence&&technicalPositive&&fundamentalPositive&&score>=65?'A':(fundamentalPositive?'B':'D'));
+   const qualified=!riskVeto&&hasCapitalEvidence&&technicalPositive&&!overheating&&score>=40;
    item.screenScore=score;
-   item.screenDecision=qualified?'进入观察池，等待交易触发':'不具备建仓条件';
-   item.screenEvidence={validFiveDayStockFlow:!!validHistory,positiveFiveDayStockFlow:flowPositive,matchedSectorCount:matchedSector.length,positiveSectorFlow:sectorPositive,negativeSectorFlow:sectorNegative,technicalTrend:ind.trend||'未知',shortMomentumPositive:shortMomentum,fundamentalProfitPositive:fundamentalPositive,catalystEvidence,matchedNewsCount:(item.relatedNews||[]).length,overheating,qualified};
+   item.screenGrade=grade;
+   item.screenDecision=riskVeto?'D级：风险否决/回避':grade==='A'?'A级：可进入建仓观察，仍需等待触发':grade==='B'?'B级：关注，等资金/风险信号补齐':'D级：暂不建仓';
+   item.screenEvidence={validFiveDayStockFlow:!!validHistory,positiveFiveDayStockFlow:flowPositive,matchedSectorCount:matchedSector.length,positiveSectorFlow:sectorPositive,negativeSectorFlow:sectorNegative,technicalTrend:ind.trend||'未知',shortMomentumPositive:shortMomentum,fundamentalProfitPositive:fundamentalPositive,catalystEvidence,matchedNewsCount:(item.relatedNews||[]).length,overheating,riskVeto,riskUnknown,technicalBroken,qualified};
   }
   const good=results.filter(x=>x.ok);
   if(!good.length)throw Error('三只候选股均未能完成基础数据核验');
@@ -836,11 +873,11 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    ]
   };
   stage='调用AI生成选股报告';
-  const eligible=good.filter(x=>x.screenEvidence?.qualified).sort((a,b)=>(b.screenScore||0)-(a.screenScore||0));
-  const compactPayload={...payload,actionableCount:eligible.length,marketNews:(newsResult.data?.rows||[]).slice(0,8),candidates:payload.candidates.map(x=>{const r=good.find(y=>y.code===x.stock.code);return {...x,screenScore:r?.screenScore,screenDecision:r?.screenDecision,screenEvidence:r?.screenEvidence,relatedNews:r?.relatedNews||[],stock:{...x.stock,flowHistory:x.stock.flowHistory?{rows:(x.stock.flowHistory.rows||[]).slice(-5),latest:x.stock.flowHistory.latest,cumulativeMainNetInflow:x.stock.flowHistory.cumulativeMainNetInflow,historyDays:x.stock.flowHistory.historyDays,period:x.stock.flowHistory.period,source:x.stock.flowHistory.source}:null},sectorContext:{...x.sectorContext,boards:(x.sectorContext?.boards||[]).slice(0,3)}};})};
+  const eligible=good.filter(x=>x.screenGrade==='A'&&x.screenEvidence?.qualified).sort((a,b)=>(b.screenScore||0)-(a.screenScore||0));
+  const compactPayload={...payload,actionableCount:eligible.length,marketNews:(newsResult.data?.rows||[]).slice(0,8),candidates:payload.candidates.map(x=>{const r=good.find(y=>y.code===x.stock.code);return {...x,screenScore:r?.screenScore,screenDecision:r?.screenDecision,screenEvidence:r?.screenEvidence,screenGrade:r?.screenGrade,riskAudit:r?.riskAudit,relatedNews:r?.relatedNews||[],stock:{...x.stock,flowHistory:x.stock.flowHistory?{rows:(x.stock.flowHistory.rows||[]).slice(-5),latest:x.stock.flowHistory.latest,cumulativeMainNetInflow:x.stock.flowHistory.cumulativeMainNetInflow,historyDays:x.stock.flowHistory.historyDays,period:x.stock.flowHistory.period,source:x.stock.flowHistory.source}:null},sectorContext:{...x.sectorContext,boards:(x.sectorContext?.boards||[]).slice(0,3)}};})};
   const content=await callAI(cfg,[
-   {role:'system',content:'你是A股短线实战交易团队，必须把证据转化成明确行动，而不是复述数据。只允许依据输入，不能编造。第一屏先给：一、总判断（可埋伏/等确认/持有观察/减仓防守/回避）；二、可执行名单0—3只，按优先级；三、每只一句“现在做什么”。如果没有合格股，必须明确写“本轮无符合准入条件的建仓标的”，绝不为凑数推荐。准入策略：资金面25分（仅至少5个有日期且非陈旧缓存的个股主力净流入历史才有效）；板块面25分（必须先验证个股板块归属，再匹配该板块有效净流入和涨跌）；量价面20分（趋势、短中期动量和量价确认；成交额榜不等于主力资金）；基本面15分（可核验的盈利/增长数据）；催化证据5分（新闻标题/摘要须匹配个股或已核验板块）；风险与拥挤度10分（过热、连续回撤、换手异常）。总分只作相对排序，不是胜率。当前后端没有抓取市场/个股新闻时，催化必须标为未核验，不能声称无催化，也不能凭模型知识补消息。股票进入观察池至少要有可验证的正向个股资金历史或正向所属板块资金证据，且技术趋势不能偏弱；否则只能列为暂不介入/观察，不得给出建仓指令。报告按顺序：1）市场状态与仓位建议（依据实际指数数据）；2）结论和动作清单；3）最多3只合格候选，每只只写“判断、为什么、介入触发、持有者怎么做、失效条件”；4）不推荐/排除原因；5）证据缺口简表。默认中文、短句、人话，总长约1000—1400字。不要输出大段字段清单，不要把数据源诊断当正文主体。价格条件只能引用真实K线/均线/区间。不得承诺收益。'},
-   {role:'user',content:'请按上述准入规则完成本轮A股短线选股。若没有合格标的，明确给出空仓/等待结论。候选股数量不等于推荐数量。实际抓取数据：'+JSON.stringify({...compactPayload,selectionMethod:'证据门槛+多因子评分；候选排行只用于形成初始观察池，非直接推荐',limitations:[...payload.limitations,'新闻源本轮'+(newsResult.error?'抓取失败：'+newsResult.error:'已抓取市场新闻；只有标题/摘要匹配个股名称或已核验板块名称的记录才作为相关催化。'),'只有经日期核验的5日个股资金流或已匹配的所属板块资金流，才算资金面证据。']})}
+   {role:'system',content:'你是A股短线实战交易团队，必须把证据转化成明确行动，而不是复述数据。只允许依据输入，不能编造。风险否决优先于评分；riskAudit.veto或persistentFiveDayOutflow或technicalBroken为真时不得推荐建仓。A/B/C/D分级必须遵循输入的screenGrade，不可擅自升级。公告、解禁日期、质押比例未核验时，不得宣称风险已排除；公告接口返回的标题仅为线索，未阅读全文不等于确认事件。第一屏先给：一、总判断（可埋伏/等确认/持有观察/减仓防守/回避）；二、可执行名单0—3只，按优先级；三、每只一句“现在做什么”。如果没有合格股，必须明确写“本轮无符合准入条件的建仓标的”，绝不为凑数推荐。准入策略：资金面25分（仅至少5个有日期且非陈旧缓存的个股主力净流入历史才有效）；板块面25分（必须先验证个股板块归属，再匹配该板块有效净流入和涨跌）；量价面20分（趋势、短中期动量和量价确认；成交额榜不等于主力资金）；基本面15分（可核验的盈利/增长数据）；催化证据5分（新闻标题/摘要须匹配个股或已核验板块）；风险与拥挤度10分（过热、连续回撤、换手异常）。总分只作相对排序，不是胜率。当前后端没有抓取市场/个股新闻时，催化必须标为未核验，不能声称无催化，也不能凭模型知识补消息。股票进入观察池至少要有可验证的正向个股资金历史或正向所属板块资金证据，且技术趋势不能偏弱；否则只能列为暂不介入/观察，不得给出建仓指令。报告按顺序：1）市场状态与仓位建议（依据实际指数数据）；2）结论和动作清单；3）最多3只合格候选，每只只写“判断、为什么、介入触发、持有者怎么做、失效条件”；4）不推荐/排除原因；5）证据缺口简表。默认中文、短句、人话，总长约1000—1400字。不要输出大段字段清单，不要把数据源诊断当正文主体。价格条件只能引用真实K线/均线/区间。不得承诺收益。'},
+   {role:'user',content:'请按上述准入规则完成本轮A股短线选股。若没有合格标的，明确给出空仓/等待结论。候选股数量不等于推荐数量。实际抓取数据：'+JSON.stringify({...compactPayload,selectionMethod:'证据门槛+多因子评分；候选排行只用于形成初始观察池，非直接推荐',limitations:[...payload.limitations,'市场新闻'+(newsResult.error?'抓取失败：'+newsResult.error:'已抓取；仅保留近7天且匹配个股或已核验板块的标题/摘要。')+'公告风险扫描以实际返回公告为限，质押比例和未来30天解禁尚未完成结构化验证。','只有经日期核验的5日个股资金流或已匹配的所属板块资金流，才算资金面证据。']})}
   ],70000,4000);
   stage='保存选股报告';
   const created=now();
