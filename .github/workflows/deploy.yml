@@ -64,6 +64,19 @@ jobs:
           node <<'NODE'
           const base = process.env.WORKER_URL;
           (async () => {
+            for (let batch = 0; batch < 3; batch++) {
+              const syncResponse = await fetch(base + '/api/screen-universe/batch?batch=' + batch, {
+                method: 'POST',
+                headers: {'content-type':'application/json','cache-control':'no-cache'},
+                body: '{}',
+                signal: AbortSignal.timeout(90000)
+              });
+              const syncRaw = await syncResponse.text();
+              let sync;
+              try { sync = JSON.parse(syncRaw); } catch { throw new Error('Universe batch '+batch+' HTTP '+syncResponse.status+' non-JSON: '+syncRaw.slice(0,200)); }
+              console.log('Universe batch:', JSON.stringify({batch,httpStatus:syncResponse.status,ok:sync.ok,count:sync.validStockCount,source:sync.source,error:sync.error||null}));
+              if (!syncResponse.ok || sync.ok !== true || sync.validStockCount < 500) throw new Error('Universe batch '+batch+' failed');
+            }
             const response = await fetch(base + '/api/ai/screen', {
               method: 'POST',
               headers: {'content-type':'application/json','cache-control':'no-cache'},
@@ -85,7 +98,7 @@ jobs:
               sampleCodes: Array.isArray(x.results) ? x.results.map(r=>r.code).slice(0,8) : null
             }));
             if (!response.ok || x.ok !== true) throw new Error('Production smart-screen endpoint failed');
-            if (!x.marketUniverse || x.marketUniverse.validStockCount < 1000 || x.marketUniverse.coveragePassed !== true) throw new Error('Full-market coverage gate failed');
+            if (!x.marketUniverse || x.marketUniverse.validStockCount < 4500 || x.marketUniverse.coveragePassed !== true) throw new Error('Full-market coverage gate failed');
             if (!Array.isArray(x.results) || x.results.length < 3) throw new Error('Expected at least three analyzed finalists from the broad-market scan');
           })().catch(e => { console.error(e); process.exit(1); });
           NODE
