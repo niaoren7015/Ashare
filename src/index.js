@@ -428,10 +428,11 @@ async function fetchFinancialSnapshot(code){
  throw Error('财务摘要接口均未通过有效性校验：'+errors.join('；'));
 }
 
-async function fetchSectorFlowRanks(type='industry'){
+async function fetchSectorFlowRanks(type='industry',options={}){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const fs=type==='concept'?'m:90+t:3+f:!50':'m:90+t:2+f:!50';
- const hosts=type==='concept'?['79.push2.eastmoney.com','29.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com']:['17.push2.eastmoney.com','29.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com'];
+ const allHosts=type==='concept'?['79.push2.eastmoney.com','29.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com']:['17.push2.eastmoney.com','29.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com'];
+ const hosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
  for(const host of hosts){
   try{
    const u=new URL('https://'+host+'/api/qt/clist/get');
@@ -451,9 +452,10 @@ async function fetchSectorFlowRanks(type='industry'){
  throw Error('板块资金流排行接口均未通过有效性校验：'+errors.join('；'));
 }
 
-async function fetchStockBoards(code){
+async function fetchStockBoards(code,options={}){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
- const hosts=['push2.eastmoney.com','push2delay.eastmoney.com','push2his.eastmoney.com','29.push2.eastmoney.com','79.push2.eastmoney.com'];
+ const allHosts=['push2.eastmoney.com','push2delay.eastmoney.com','push2his.eastmoney.com','29.push2.eastmoney.com','79.push2.eastmoney.com'];
+ const hosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
  for(const host of hosts){
   try{
    const u=new URL('https://'+host+'/api/qt/slist/get');
@@ -667,7 +669,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
     officialAnnouncements:!!cninfoResult.data?.rows?.length,
     relatedNewsCount:relatedNews.length,rawStockNewsCandidateCount:rawStockNews.length,stockNewsRelevanceNote,
     boardCount:boards.length,industryFlowRows:industryResult.data.length,conceptFlowRows:conceptResult.data.length,
-    sourceAudit:{quote:{status:'validated',source:q.source,checkedAt:q.fetchedAt||now()},dailyKline:{status:rows.length>=20?'validated':rows.length?'partial':'unavailable',source:k?.source||null,validRows:rows.length,asOfDate:rows.at(-1)?.date||null,error:kResult.error||null,quality:k?.quality||null},financial:{status:financeResult.data?.rows?.length?'validated':'unavailable',source:financeResult.data?.source||null,rows:financeResult.data?.rows?.length||0,error:financeResult.error||null},stockFlow:{status:flowResult.data?.period==='snapshot-date-unverified'?'partial':(flowResult.data?.rows?.length>=5&&flowResult.data?.rows?.some(x=>Number.isFinite(x.mainNetInflow))?'validated':'unavailable'),source:flowResult.data?.source||null,host:flowResult.data?.host||null,period:flowResult.data?.period||null,historyDays:flowResult.data?.historyDays||0,latestDate:flowResult.data?.latest?.date||null,mainNetInflow:flowResult.data?.latest?.mainNetInflow??null,error:flowResult.error||null},announcements:{status:cninfoResult.data?.rows?.length?'validated':'unavailable',source:cninfoResult.data?.source||null,rows:cninfoResult.data?.rows?.length||0,error:cninfoResult.error||null},sectorMembership:{status:boards.length?'partial':'unavailable',rows:boards.length,error:boardsResult.error||null},news:{status:relatedNews.length?'validated':(stockNewsResult.error?'unavailable':'empty'),source:stockNewsResult.data?.source||null,candidateCount:rawStockNews.length,matchedCount:relatedNews.length,error:stockNewsResult.error||null,relevanceNote:stockNewsRelevanceNote,policy:'仅当标题/摘要包含股票名称或代码时才作为个股相关新闻；公告单独列示，不用泛财经资讯替代个股新闻'},industryFlow:{status:industryResult.data.some(x=>Number.isFinite(x.flow))?'validated':'unavailable',source:industryResult.data[0]?.source||null,rows:industryResult.data.length,coveragePct:industryResult.data.length?Math.round(industryResult.data.filter(x=>Number.isFinite(x.flow)).length/industryResult.data.length*100):0,error:industryResult.error||null},conceptFlow:{status:conceptResult.data.some(x=>Number.isFinite(x.flow))?'validated':'unavailable',source:conceptResult.data[0]?.source||null,rows:conceptResult.data.length,coveragePct:conceptResult.data.length?Math.round(conceptResult.data.filter(x=>Number.isFinite(x.flow)).length/conceptResult.data.length*100):0,error:conceptResult.error||null},marketNews:{status:(marketNewsResult.data?.rows||[]).length?'validated':'unavailable',source:marketNewsResult.data?.source||null,matchedCount:(marketNewsResult.data?.rows||[]).length,error:marketNewsResult.error||null}},
+    sourceAudit:{quote:{status:'validated',source:q.source,checkedAt:q.fetchedAt||now()},dailyKline:{status:rows.length>=20?'validated':rows.length?'partial':'unavailable',source:k?.source||null,validRows:rows.length,asOfDate:rows.at(-1)?.date||null,error:kResult.error||null,quality:k?.quality||null},financial:{status:financeResult.data?.rows?.length?'validated':'unavailable',source:financeResult.data?.source||null,rows:financeResult.data?.rows?.length||0,error:financeResult.error||null},stockFlow:{status:flowResult.data?.cache?.status==='stale-fallback'?'stale':(flowResult.data?.period==='snapshot-date-unverified'?'partial':(flowResult.data?.rows?.length>=5&&flowResult.data?.period!=='snapshot-date-unverified'&&flowResult.data?.rows?.some(x=>Number.isFinite(x.mainNetInflow))?'validated':'unavailable')),cacheStatus:flowResult.data?.cache?.status||'fresh-or-not-wrapped',source:flowResult.data?.source||null,host:flowResult.data?.host||null,period:flowResult.data?.period||null,historyDays:flowResult.data?.historyDays||0,latestDate:flowResult.data?.latest?.date||null,mainNetInflow:flowResult.data?.latest?.mainNetInflow??null,error:flowResult.error||flowResult.data?.cache?.warning||null},announcements:{status:cninfoResult.data?.rows?.length?'validated':'unavailable',source:cninfoResult.data?.source||null,rows:cninfoResult.data?.rows?.length||0,error:cninfoResult.error||null},sectorMembership:{status:boards.length?'partial':'unavailable',rows:boards.length,error:boardsResult.error||null},news:{status:relatedNews.length?'validated':(stockNewsResult.error?'unavailable':'empty'),source:stockNewsResult.data?.source||null,candidateCount:rawStockNews.length,matchedCount:relatedNews.length,error:stockNewsResult.error||null,relevanceNote:stockNewsRelevanceNote,policy:'仅当标题/摘要包含股票名称或代码时才作为个股相关新闻；公告单独列示，不用泛财经资讯替代个股新闻'},industryFlow:{status:industryResult.data.some(x=>Number.isFinite(x.flow))?'validated':'unavailable',source:industryResult.data[0]?.source||null,rows:industryResult.data.length,coveragePct:industryResult.data.length?Math.round(industryResult.data.filter(x=>Number.isFinite(x.flow)).length/industryResult.data.length*100):0,error:industryResult.error||null},conceptFlow:{status:conceptResult.data.some(x=>Number.isFinite(x.flow))?'validated':'unavailable',source:conceptResult.data[0]?.source||null,rows:conceptResult.data.length,coveragePct:conceptResult.data.length?Math.round(conceptResult.data.filter(x=>Number.isFinite(x.flow)).length/conceptResult.data.length*100):0,error:conceptResult.error||null},marketNews:{status:(marketNewsResult.data?.rows||[]).length?'validated':'unavailable',source:marketNewsResult.data?.source||null,matchedCount:(marketNewsResult.data?.rows||[]).length,error:marketNewsResult.error||null}},
     missing:[...(kResult.error?['日K线抓取失败']:[]),...(rows.length<20?['有效日K不足20根']:[]),...(financeResult.error?['财务摘要缺失']:[]),...(!flowResult.data?.rows?.some(x=>Number.isFinite(x.mainNetInflow))?['个股资金流缺失']:[]),...((flowResult.data?.period==='snapshot-date-unverified')?['个股资金流仅有日期未核实快照，不可称为5日历史']:[]),...(cninfoResult.error?['官方公告抓取失败']:[]),...(boardsResult.error?['行业/概念归属抓取失败']:[]),...(stockNewsResult.error?['个股相关新闻抓取失败：'+stockNewsResult.error]:[]),...(stockNewsRelevanceNote?[stockNewsRelevanceNote]:[]),...(industryResult.error?['行业资金流抓取失败：'+industryResult.error]:[]),...(conceptResult.error?['概念资金流抓取失败：'+conceptResult.error]:[]),...(marketNewsResult.error?['泛财经新闻抓取失败：'+marketNewsResult.error]:[])]
    }
   };
@@ -686,14 +688,14 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  if(!cfg.ai_endpoint||!cfg.ai_api_key||!cfg.ai_model)return json({error:'请先在设置中配置 AI Endpoint、API Key 和 Model'},400);
  const started=Date.now();let stage='读取候选行情、指数和资讯';
  try{
-  const [candidates,market,liquidityResult]=await Promise.all([
+  // Hard-budget this Worker invocation: candidate ranking is primary; broad market liquidity and
+  // generic news are optional context and are not fetched in the screening request.
+  const [candidates,market]=await Promise.all([
    cachedData(db,'screen-candidates',45000,async()=>({items:await fetchScreenCandidates()})).then(x=>x.items),
-   Promise.all(['000001','399001','399006'].map(async code=>{try{return await cachedData(db,'index:'+code,20000,()=>quoteIndex(code))}catch(e){return{code,error:String(e.message||e)}}})),
-   cachedData(db,'market-liquidity',20000,()=>fetchMarketLiquidity()).catch(e=>({source:null,error:String(e.message||e)}))
+   Promise.all(['000001','399001'].map(async code=>{try{return await cachedData(db,'index:'+code,20000,()=>quoteIndex(code))}catch(e){return{code,error:String(e.message||e)}}}))
   ]);
-  // The current Sina feed contains US equities and generic global finance stories.
-  // Do not spend a Worker subrequest or present it as A-share catalysts until relevance is validated.
-  const newsResult=await cachedData(db,'market-news:domestic',60000,()=>fetchMarketNews('domestic')).then(data=>({items:data.rows||[],error:null,source:data.source})).catch(e=>({items:[],error:String(e?.message||e),source:null}));
+  const liquidityResult={source:null,skipped:true,note:'为控制单次Worker子请求预算，本次未单独抓取全市场流动性样本；这不代表流动性正常或异常。'};
+  const newsResult={items:[],error:null,source:null,skipped:true,note:'为控制单次Worker子请求预算，本次未抓取泛市场新闻；新闻缺失不代表没有催化。'};
   if(!candidates.length)throw Error('没有取得有效候选股行情，请稍后重试');
   stage='筛选候选股'+(candidates.some(c=>Number.isFinite(c.flow))?'并核验可用资金流':'（当前候选榜仅含成交额，不发起无效资金流请求）');
   // First rank by observable liquidity, net flow, valuation availability and overheating risk.
@@ -708,18 +710,12 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    if(Number.isFinite(c.amount)&&c.amount>300000000)score+=1;
    return {...c,preScore:Number(score.toFixed(2))};
   }).sort((a,b)=>b.preScore-a.preScore);
-  // Only query per-stock flow history when the candidate endpoint actually supplied numeric flow fields.
-  // The Sina turnover fallback has no flow fields; calling several failing Eastmoney endpoints for every candidate
-  // multiplies Worker subrequests without adding information and can exceed the per-invocation quota.
-  const hasVerifiedFlowSnapshot=ranked.some(c=>Number.isFinite(c.flow)&&String(c.rankSource||'').startsWith('eastmoney-money-flow-'));
-  const flowChecked=hasVerifiedFlowSnapshot?await Promise.all(ranked.slice(0,3).map(async c=>{
-   if(!Number.isFinite(c.flow))return {...c,flowHistory:null,flowHistoryError:'候选榜未提供可验证资金流字段'};
-   try{return {...c,flowHistory:await cachedData(db,'flow:'+c.code,60000,()=>fetchStockFlowHistory(c.code)),flowHistoryError:null}}
-   catch(e){return {...c,flowHistory:null,flowHistoryError:String(e.message||e)}}
-  })):ranked.slice(0,5).map(c=>({...c,flowHistory:null,flowHistoryError:'当前候选榜为成交额排行，不含资金流字段；跳过无效的逐股资金流请求'}));
-  const flowPositive=flowChecked.filter(c=>c.flowHistory?.latest?.mainNetInflow>0&&c.changePct<6&&(!Number.isFinite(c.pe)||c.pe>0))
-   .sort((a,b)=>(b.flowHistory.cumulativeMainNetInflow||0)-(a.flowHistory.cumulativeMainNetInflow||0));
-  const chosen=(flowPositive.length>=3?flowPositive:flowChecked.filter(c=>c.flowHistory).length>=3?flowChecked.filter(c=>c.flowHistory).sort((a,b)=>(b.flowHistory?.cumulativeMainNetInflow||-Infinity)-(a.flowHistory?.cumulativeMainNetInflow||-Infinity)):flowChecked.slice().sort((a,b)=>b.preScore-a.preScore)).slice(0,3);
+  // Do not fan out into per-stock history endpoints for all ranked candidates. The ranking f62
+  // is only an undated snapshot; keep it labeled as such and never treat it as 5-day flow history.
+  const flowChecked=ranked.slice(0,3).map(c=>({...c,flowHistory:null,flowHistoryError:Number.isFinite(c.flow)
+   ?'候选榜仅含交易日期未核实的资金流快照；为控制Worker子请求预算，未追加逐股历史请求'
+   :'候选榜未提供可验证资金流字段；为控制Worker子请求预算，跳过逐股资金流历史请求'}));
+  const chosen=flowChecked;
   stage='读取最终候选股行情和日K线';
   // Fetch actual quote + daily bars for only the three finalists, avoiding the old high fan-out pattern.
   const results=await Promise.all(chosen.map(async c=>{
@@ -742,9 +738,9 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   }));
   stage='核验候选股所属板块与行业/概念资金流';
   const [industryFlowResult,conceptFlowResult,boardResults]=await Promise.all([
-   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry')).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
-   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept')).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
-   Promise.all(results.map(async item=>({code:item.code,...await cachedData(db,'stock-boards:'+item.code,300000,()=>fetchStockBoards(item.code)).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})))
+   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry',{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
+   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept',{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
+   Promise.all(results.map(async item=>({code:item.code,...await cachedData(db,'stock-boards:'+item.code,300000,()=>fetchStockBoards(item.code,{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})))
   ]);
   const sectorMap=new Map([...industryFlowResult.data,...conceptFlowResult.data].map(x=>[x.code,x]));
   for(const item of results){
