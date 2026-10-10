@@ -71,7 +71,7 @@ async function screenStocks(){
   $('#screenOut').innerHTML='';
   const r=await api('/api/ai/screen',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
   const count=Number(r.actionableCount||0);
-  $('#screenStatus').textContent=count>0?'筛选完成：'+count+' 只通过准入条件；初始候选池 '+r.results.length+' 只。':'筛选完成：本轮没有通过资金/板块与趋势准入条件的建仓标的；请等待数据或行情改善。';
+  $('#screenStatus').textContent=count>0?'筛选完成：'+count+' 只通过准入条件；初始候选池 '+r.results.length+' 只。':'筛选完成：本轮没有通过完整风险排查与建仓准入的标的；可能是风险数据未核验或资金/板块/趋势不满足，详见报告与风险排查列。';
   const tableRows=(r.results||[]).map(x=>{
    const a=x.analysis||{},ev=x.screenEvidence||{},boards=(x.sectorContext?.boards||[]).slice(0,2).map(b=>escapeHTML(b.name)).join(' / ')||'未核验';
    const flow=Number.isFinite(a.fundFlowHistory?.cumulativeMainNetInflow)?fmt(a.fundFlowHistory.cumulativeMainNetInflow)+' 元（5日）':'未通过5日资金流核验';
