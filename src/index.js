@@ -714,7 +714,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   }).sort((a,b)=>b.preScore-a.preScore);
   // Do not fan out into per-stock history endpoints for all ranked candidates. The ranking f62
   // is only an undated snapshot; keep it labeled as such and never treat it as 5-day flow history.
-  const flowChecked=ranked.slice(0,3).map(c=>({...c,flowHistory:null,flowHistoryError:Number.isFinite(c.flow)
+  const flowChecked=ranked.slice(0,5).map(c=>({...c,flowHistory:null,flowHistoryError:Number.isFinite(c.flow)
    ?'候选榜仅含交易日期未核实的资金流快照；为控制Worker子请求预算，未追加逐股历史请求'
    :'候选榜未提供可验证资金流字段；为控制Worker子请求预算，跳过逐股资金流历史请求'}));
   const chosen=flowChecked;
@@ -774,9 +774,11 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    if(shortMomentum)score+=8;
    if(fundamentalPositive)score+=10;
    if(fin&&Number.isFinite(fin.revenueGrowthPct)&&fin.revenueGrowthPct>0)score+=5;
-   if(!overheating)score+=5;
-   if(!(Number.isFinite(ind.return20dPct)&&ind.return20dPct<-12))score+=5;
-   if(!(Number.isFinite(item.turnover)&&item.turnover>15))score+=5;
+   const catalystEvidence=(item.relatedNews||[]).length>0;
+   if(catalystEvidence)score+=5;
+   if(!overheating)score+=4;
+   if(!(Number.isFinite(ind.return20dPct)&&ind.return20dPct<-12))score+=3;
+   if(!(Number.isFinite(item.turnover)&&item.turnover>15))score+=3;
    if(sectorNegative)score-=10;
    if(Number.isFinite(ind.return20dPct)&&ind.return20dPct<-12)score-=10;
    score=Math.max(0,Math.min(100,score));
@@ -784,7 +786,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const qualified=hasCapitalEvidence&&technicalPositive&&!overheating&&score>=40;
    item.screenScore=score;
    item.screenDecision=qualified?'进入观察池，等待交易触发':'不具备建仓条件';
-   item.screenEvidence={validFiveDayStockFlow:!!validHistory,positiveFiveDayStockFlow:flowPositive,matchedSectorCount:matchedSector.length,positiveSectorFlow:sectorPositive,negativeSectorFlow:sectorNegative,technicalTrend:ind.trend||'未知',shortMomentumPositive:shortMomentum,fundamentalProfitPositive:fundamentalPositive,overheating,qualified};
+   item.screenEvidence={validFiveDayStockFlow:!!validHistory,positiveFiveDayStockFlow:flowPositive,matchedSectorCount:matchedSector.length,positiveSectorFlow:sectorPositive,negativeSectorFlow:sectorNegative,technicalTrend:ind.trend||'未知',shortMomentumPositive:shortMomentum,fundamentalProfitPositive:fundamentalPositive,catalystEvidence,matchedNewsCount:(item.relatedNews||[]).length,overheating,qualified};
   }
   const good=results.filter(x=>x.ok);
   if(!good.length)throw Error('三只候选股均未能完成基础数据核验');
@@ -795,7 +797,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    const financeCount=good.filter(x=>x.analysis.dataQuality?.financialStatementsAvailable).length;
    const flowErrors=good.map(x=>x.analysis.flowHistoryError).filter(Boolean).slice(0,3).join(' | ');
    const financeErrors=good.map(x=>x.analysis.financialSnapshotError).filter(Boolean).slice(0,3).join(' | ');
-   if(indexCount<2||quoteCount<3||klineCount<2||financeCount<2)throw Error('基础行情/技术/财务数据质量门槛未通过，暂不生成误导性报告。可用数据：指数 '+indexCount+'/3，个股实时行情 '+quoteCount+'/3，至少20日有效日K '+klineCount+'/3，财务摘要 '+financeCount+'/3。资金流当前 '+flowCount+'/3（资金流不是报告生成的硬门槛，缺失时会明确标注未知）。资金流错误：'+(flowErrors||'无')+'。财务错误：'+(financeErrors||'无')+'。市场流动性源：'+(liquidityResult.error||liquidityResult.source||'未知')+'。');
+   if(indexCount<2||quoteCount<3||klineCount<2||financeCount<2)throw Error('基础行情/技术/财务数据质量门槛未通过，暂不生成误导性报告。可用数据：指数 '+indexCount+'/2，个股实时行情 '+quoteCount+'/'+good.length+'，至少20日有效日K '+klineCount+'/'+good.length+'，财务摘要 '+financeCount+'/'+good.length+'。资金流当前 '+flowCount+'/3（资金流不是报告生成的硬门槛，缺失时会明确标注未知）。资金流错误：'+(flowErrors||'无')+'。财务错误：'+(financeErrors||'无')+'。市场流动性源：'+(liquidityResult.error||liquidityResult.source||'未知')+'。');
   const payload={
    generatedAt:now(),elapsedMs:Date.now()-started,marketIndices:market,marketLiquidity:liquidityResult,
    marketNews:(newsResult.data?.rows||[]).slice(0,12),newsFetchError:newsResult.error,
