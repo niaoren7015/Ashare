@@ -854,9 +854,20 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    if(turn!=null){if(turn>=1&&turn<=10)score+=3;else if(turn>=0.4&&turn<1)score+=1;else if(turn>10&&turn<=15)score+=0.5;else if(turn>15)score-=3;else score-=0.5;}
    return {...c,preScore:Number(score.toFixed(3)),amountLiquidityScore:Number(amountScore.toFixed(2)),shortTermMomentumScore:ch==null?null:(ch>=1&&ch<=4.5?4:ch>4.5&&ch<=7?1.5:ch>7?-5:ch>=0?1:ch>=-2?-0.5:-3)};
   }).sort((a,b)=>b.preScore-a.preScore||(Number(b.amount)||0)-(Number(a.amount)||0)||(Number(b.turnover)||0)-(Number(a.turnover)||0));
-  // Expensive history and risk checks are limited to four finalists selected from the broad-market scan.
-  const flowChecked=ranked.slice(0,4).map(c=>({...c,flowHistory:null,flowHistoryError:'全市场行情初筛不含可验证个股资金流；进入深入分析后单独核验带日期的资金流历史'}));
-  const chosen=flowChecked.slice(0,4);
+  // Keep the Worker request budget bounded, but avoid letting a value-only score repeatedly select mature mega-caps.
+  // Four different short-term profiles are sampled from the full-market list before expensive checks.
+  const chosen=[];
+  const addFinalist=pool=>{const found=pool.find(c=>!chosen.some(x=>x.code===c.code));if(found)chosen.push(found);};
+  const liquid=ranked.filter(c=>Number.isFinite(c.amount)&&c.amount>=80000000&&Number.isFinite(c.turnover)&&c.turnover>=0.5&&c.turnover<=12);
+  const momentumPool=liquid.filter(c=>Number.isFinite(c.changePct)&&c.changePct>=1&&c.changePct<=7).sort((a,b)=>(b.shortTermMomentumScore||0)-(a.shortTermMomentumScore||0)||b.preScore-a.preScore);
+  const activePool=liquid.filter(c=>Number.isFinite(c.changePct)&&c.changePct>=-1&&c.changePct<=5).sort((a,b)=>(Number(b.turnover)||0)-(Number(a.turnover)||0)||b.preScore-a.preScore);
+  const valuePool=liquid.filter(c=>Number.isFinite(c.changePct)&&c.changePct>=0&&c.changePct<=4.5&&Number.isFinite(c.pe)&&c.pe>0&&c.pe<=35).sort((a,b)=>b.preScore-a.preScore);
+  addFinalist(ranked);
+  addFinalist(momentumPool);
+  addFinalist(activePool);
+  addFinalist(valuePool);
+  for(const c of ranked){if(chosen.length>=4)break;addFinalist([c]);}
+  const flowChecked=chosen.map(c=>({...c,flowHistory:null,flowHistoryError:'正在对该候选股单独核验带日期的主力资金流历史'}));
   stage='读取最终候选股行情和日K线';
   // Fetch actual quote + daily bars for four finalists, keeping the request budget bounded.
   const results=await Promise.all(chosen.map(async c=>{
@@ -879,9 +890,9 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   }));
   stage='核验候选股所属板块与行业/概念资金流';
   const [industryFlowResult,conceptFlowResult,boardResults]=await Promise.all([
-   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry',{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
-   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept',{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
-   Promise.all(results.map(async item=>({code:item.code,...await cachedData(db,'stock-boards:'+item.code,300000,()=>fetchStockBoards(item.code,{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})))
+   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
+   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
+   Promise.all(results.map(async item=>({code:item.code,...await cachedData(db,'stock-boards:'+item.code,300000,()=>fetchStockBoards(item.code,{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})))
   ]);
   const sectorRows=[...industryFlowResult.data,...conceptFlowResult.data];
   const sectorMap=new Map();for(const x of sectorRows){if(x.code)sectorMap.set('code:'+x.code,x);if(x.name)sectorMap.set('name:'+String(x.name).trim().toLowerCase(),x)}
@@ -928,7 +939,7 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    item.riskAudit={source:ann?.data?.source||null,fetchedAt:ann?.data?.fetchedAt||null,announcementAvailable,announcementError:ann?.error||null,checkedRecentAnnouncementCount:textRows.length,flags,unlockClues:unlockRows,unlockStatus,pledgeStatus,fiveDayMainNetInflow:fiveDayFlow,persistentFiveDayOutflow:persistentOutflow,revenueUpProfitDown,veto,unknowns,announcementTitles:textRows.slice(0,8)};
   }
   // A bounded, single-host 5-day flow check for the five shortlisted names. No undated snapshot fallback.
-  const candidateFlowResults=await Promise.all(results.map(async item=>cachedData(db,'screen-flow-history:'+item.code,60000,()=>fetchStockFlowHistory(item.code,{maxHosts:1,historyOnly:true})).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
+  const candidateFlowResults=await Promise.all(results.map(async item=>cachedData(db,'screen-flow-history:'+item.code,60000,()=>fetchStockFlowHistory(item.code,{maxHosts:3,historyOnly:true})).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
   for(const item of results){
    const f=candidateFlowResults.find(x=>x.code===item.code);
    const hist=f?.data;
