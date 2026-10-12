@@ -1033,7 +1033,7 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   const payload={
    generatedAt:now(),elapsedMs:Date.now()-started,marketUniverse:{source:candidatePayload.source||candidates[0]?.rankSource||null,validStockCount:candidates.length,scope:'新浪全市场股票列表分页同步；成交额仅作流动性代理，不代表主力资金',minimumCoverage:4500,coveragePassed:candidatePayload.coveragePassed===true,scanDate:now(),fetchedAtRange:candidatePayload.fetchedAtRange,pagesFetched:candidatePayload.pagesFetched},marketIndices:market,marketLiquidity:liquidityResult,
    marketNews:(newsResult.data?.rows||[]).slice(0,12),newsFetchError:newsResult.error,
-   selectionMethod:'全市场行情池 → 日涨幅/换手/估值/成交额因子排序 → 前4名深入核验日K、财务、所属板块、带日期的5日资金历史和公告风险；成交额不等于主力资金',
+   selectionMethod:'全市场股票池 → 成交额/换手/短线动量初筛 → 5只分层预选并核验行业/概念板块资金 → 4只深入核验日K、5日个股资金、财务和公告风险；估值仅作辅助因子，成交额不等于主力资金',
    candidates:good.map(x=>({
     stock:{code:x.code,name:x.name,price:x.analysis.quote.price,changePct:x.changePct,amount:x.amount,turnover:x.turnover,pe:x.analysis.quote.pe??x.pe,pb:x.analysis.quote.pb??null,flow:x.flow,flowSource:x.analysis.fundFlowHistory?.source||x.rankSource,flowHistory:x.analysis.fundFlowHistory,flowHistoryError:x.analysis.flowHistoryError,flowPeriod:x.analysis.fundFlowHistory?.period||null,financialSnapshot:x.analysis.financialSnapshot||null,financialSnapshotError:x.analysis.financialSnapshotError||null,preScore:x.preScore},
     technical:x.analysis.indicators,klineSource:x.analysis.klineSource,klineError:x.analysis.klineError,
