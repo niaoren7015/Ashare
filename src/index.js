@@ -943,7 +943,10 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   for(const item of results){
    const f=candidateFlowResults.find(x=>x.code===item.code);
    const hist=f?.data;
-   if(hist&&hist.cache?.status!=='stale-fallback'&&(hist.historyDays||hist.rows?.length||0)>=5&&hist.rows?.some(x=>Number.isFinite(x.mainNetInflow))){
+   const flowDate=Date.parse(hist?.latest?.date||hist?.rows?.at(-1)?.date||'');
+   const flowAge=Number.isFinite(flowDate)?Date.now()-flowDate:Infinity;
+   const flowFresh=flowAge>=-86400000&&flowAge<=72*60*60*1000;
+   if(hist&&hist.cache?.status!=='stale-fallback'&&flowFresh&&(hist.historyDays||hist.rows?.length||0)>=5&&hist.rows?.some(x=>Number.isFinite(x.mainNetInflow))){
     item.analysis.fundFlowHistory=hist;
     item.analysis.fundFlowError=null;
     item.analysis.dataQuality.flowKnown=true;
@@ -951,7 +954,7 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
     item.analysis.dataQuality.flowHistoryDays=hist.historyDays||hist.rows.length;
    }else{
     item.analysis.fundFlowHistory=null;
-    item.analysis.flowHistoryError=f?.error||hist?.cache?.warning||'没有通过日期与覆盖率核验的5日主力资金流历史';
+    item.analysis.flowHistoryError=f?.error||hist?.cache?.warning||(hist&&!flowFresh?'资金流历史日期已过72小时新鲜度门槛':'没有通过日期与覆盖率核验的5日主力资金流历史');
     item.analysis.dataQuality.flowKnown=false;
    }
   }
