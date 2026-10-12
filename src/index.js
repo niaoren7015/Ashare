@@ -485,7 +485,7 @@ async function fetchSectorFlowRanks(type='industry',options={}){
    let body;try{body=JSON.parse(raw)}catch{const m=raw.match(/^[^(]*\(([\s\S]*)\)\s*;?$/);if(!m)throw Error(host+' 返回非JSON/JSONP');body=JSON.parse(m[1])}
    const diff=body?.data?.diff,arr=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
    if(!arr.length)throw Error(host+' 返回空板块列表；rc='+(body?.rc??'未知'));
-   const mapRows=items=>items.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:x.f2==null?null:Number(x.f2),changePct:x.f3==null?null:Number(x.f3),amount:x.f6==null||x.f6===''?null:Number(x.f6),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),flowRatio:x.f184==null||x.f184===''?null:(Number.isFinite(Number(x.f184))?Number(x.f184):null),type,source:host,unit:'CNY'})).filter(x=>x.code&&x.name);
+   const mapRows=items=>items.map(x=>({code:String(x.f12||''),name:String(x.f14||''),price:x.f2==null?null:Number(x.f2),changePct:x.f3==null?null:Number(x.f3),amount:x.f6==null||x.f6===''?null:Number(x.f6),flow:x.f62==null||x.f62===''||x.f62==='-'?null:(Number.isFinite(Number(x.f62))?Number(x.f62):null),flowRatio:x.f184==null||x.f184===''?null:(Number.isFinite(Number(x.f184))?Number(x.f184):null),type,source:host,fetchedAt:now(),unit:'CNY'})).filter(x=>x.code&&x.name);
    let rows=mapRows(arr);
    // Industry lists can be paginated at 50 rows even when pz=500; fetch the next page so a stock's sector is not treated as missing merely because it ranked outside page one.
    if(type==='industry'&&rows.length>=40&&(Number(body?.data?.total||0)>rows.length||rows.length===50)){
@@ -885,8 +885,9 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   const preliminaryScored=preliminary.map(c=>{
    const found=boardResults.find(x=>x.code===c.code);
    const boards=(found?.data||[]).map(b=>({...b,sectorFlow:(b.code?sectorMap.get('code:'+b.code):null)||sectorMap.get('name:'+String(b.name||'').trim().toLowerCase())||null}));
-   const positive=boards.filter(b=>Number.isFinite(b.sectorFlow?.flow)&&b.sectorFlow.flow>0&&Number.isFinite(b.sectorFlow.changePct)&&b.sectorFlow.changePct>0);
-   const negative=boards.filter(b=>Number.isFinite(b.sectorFlow?.flow)&&b.sectorFlow.flow<0);
+   const freshSectorFlow=b=>{const t=Date.parse(b.sectorFlow?.fetchedAt||'');const age=Date.now()-t;return Number.isFinite(t)&&age>=-86400000&&age<=72*60*60*1000;};
+   const positive=boards.filter(b=>freshSectorFlow(b)&&Number.isFinite(b.sectorFlow?.flow)&&b.sectorFlow.flow>0&&Number.isFinite(b.sectorFlow.changePct)&&b.sectorFlow.changePct>0);
+   const negative=boards.filter(b=>freshSectorFlow(b)&&Number.isFinite(b.sectorFlow?.flow)&&b.sectorFlow.flow<0);
    const themeScore=Math.min(12,positive.length*4)-(negative.length&&!positive.length?4:0);
    return {...c,preScore:Number((c.preScore+themeScore).toFixed(3)),preThemeScore:themeScore,preThemeEvidence:{boards:boards.map(b=>({name:b.name,flow:b.sectorFlow?.flow,changePct:b.sectorFlow?.changePct,type:b.sectorFlow?.type})).slice(0,5),positiveBoardCount:positive.length},flowHistory:null,flowHistoryError:'正在核验通过日期校验的个股主力资金流历史'};
   }).sort((a,b)=>b.preScore-a.preScore||(Number(b.amount)||0)-(Number(a.amount)||0));
@@ -982,7 +983,7 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    const flowAgeMs=Date.now()-flowDateMs;
    const validHistory=!!(hist&&hist.period!=='snapshot-date-unverified'&&hist.cache?.status!=='stale-fallback'&&(hist.historyDays||0)>=5&&Number.isFinite(hist.cumulativeMainNetInflow)&&Number.isFinite(flowDateMs)&&flowAgeMs>=-86400000&&flowAgeMs<=72*60*60*1000);
    const flowPositive=!!(validHistory&&hist.cumulativeMainNetInflow>0);
-   const matchedSector=boards.filter(b=>Number.isFinite(b.sectorFlow?.flow));
+   const matchedSector=boards.filter(b=>{const t=Date.parse(b.sectorFlow?.fetchedAt||'');const age=Date.now()-t;return Number.isFinite(t)&&age>=-86400000&&age<=72*60*60*1000&&Number.isFinite(b.sectorFlow?.flow);});
    const sectorPositive=matchedSector.some(b=>b.sectorFlow.flow>0&&Number.isFinite(b.sectorFlow.changePct)&&b.sectorFlow.changePct>0);
    const sectorNegative=matchedSector.length>0&&matchedSector.every(b=>b.sectorFlow.flow<0);
    const finRows=a.financialSnapshot?.rows||[];
