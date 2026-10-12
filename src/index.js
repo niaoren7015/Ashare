@@ -679,8 +679,18 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  if(!/^\d{6}$/.test(c))return json({ok:false,error:'股票代码应为6位数字'},400);
  try{
   const data=await cachedData(db,'flow:'+c,60000,()=>fetchStockFlowHistory(c));
+  const latestDate=data.latest?.date||data.rows?.at(-1)?.date||null;
+  const latestDateMs=Date.parse(latestDate||'');
+  const ageHours=Number.isFinite(latestDateMs)?Number(((Date.now()-latestDateMs)/3600000).toFixed(1)):null;
+  const staleFallback=data.cache?.status==='stale-fallback';
+  const staleByDate=Number.isFinite(ageHours)&&ageHours>72;
+  if(staleFallback||staleByDate){
+   const detail=staleFallback?'实时资金流接口失败，当前只有缓存回退数据':'最新资金流记录为 '+latestDate+'，已超过72小时新鲜度门槛';
+   await health(db,'eastmoney-stock-flow','stale',detail,null);
+   return json({ok:false,code:c,realTimeAvailable:false,staleFallback,latestDate,ageHours,source:data.source||'eastmoney-stock-fflow-kline',cache:data.cache||null,error:detail,validation:{hasRows:Array.isArray(data.rows)&&data.rows.length>0,hasMainNetFlow:Number.isFinite(data.latest?.mainNetInflow),historyDays:data.historyDays||data.rows?.length||0,canReportFiveDayTotal:false,note:'陈旧数据不会作为实时资金流返回；请稍后重试或查看数据源诊断。'}},503);
+  }
   await health(db,data.source||'eastmoney-stock-flow','ok','Flow source '+(data.host||'unknown')+'; rows '+(data.historyDays||data.rows?.length||0),data.latencyMs);
-  return json({ok:true,code:c,...data,validation:{hasRows:Array.isArray(data.rows)&&data.rows.length>0,hasMainNetFlow:Number.isFinite(data.latest?.mainNetInflow),historyDays:data.historyDays||data.rows?.length||0,canReportFiveDayTotal:(data.historyDays||data.rows?.length||0)>=5&&data.period!=='snapshot-date-unverified',unit:data.latest?.unit||'CNY',note:'仅当返回至少5个有日期的历史记录时，才可称为5日合计；日期未核实的快照不得称为当日收盘资金流。'}});
+  return json({ok:true,code:c,realTimeAvailable:data.period!=='snapshot-date-unverified',latestDate,ageHours,...data,validation:{hasRows:Array.isArray(data.rows)&&data.rows.length>0,hasMainNetFlow:Number.isFinite(data.latest?.mainNetInflow),historyDays:data.historyDays||data.rows?.length||0,canReportFiveDayTotal:(data.historyDays||data.rows?.length||0)>=5&&data.period!=='snapshot-date-unverified',unit:data.latest?.unit||'CNY',note:'仅当返回至少5个有日期的历史记录时，才可称为5日合计；日期未核实的快照不得称为当日收盘资金流。'}});
  }catch(e){
   await health(db,'eastmoney-stock-flow','error',String(e?.message||e));
   return json({ok:false,code:c,error:String(e?.message||e),source:'eastmoney-stock-fflow-kline'},502);
@@ -831,15 +841,18 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   // Rank the full market list locally; turnover is only a liquidity proxy, never main-force capital flow.
   const ranked=candidates.map(c=>{
    const flowKnown=Number.isFinite(c.flow),peKnown=Number.isFinite(c.pe)&&c.pe>0;
-   const ch=Number.isFinite(c.changePct)?c.changePct:0,turn=Number.isFinite(c.turnover)?c.turnover:0;
-   const amountScore=Number.isFinite(c.amount)&&c.amount>0?Math.min(3,Math.max(0,(Math.log10(c.amount)-6)*0.5)):0;
+   const ch=Number.isFinite(c.changePct)?c.changePct:null,turn=Number.isFinite(c.turnover)?c.turnover:null;
+   const amountScore=Number.isFinite(c.amount)&&c.amount>0?Math.min(4,Math.max(0,(Math.log10(c.amount)-6)*0.65)):0;
    let score=amountScore;
    if(flowKnown)score+=c.flow>0?3:c.flow<0?-4:0;
-   if(peKnown)score+=c.pe<=15?2:c.pe<=25?1.5:c.pe<=40?0.5:c.pe>80?-3:0;
-   if(Number.isFinite(c.pb)&&c.pb>0)score+=c.pb<=2?1:c.pb<=4?0.5:c.pb>10?-1.5:0;
-   if(ch>=-3&&ch<=2)score+=3;else if(ch>2&&ch<=5)score+=1;else if(ch>5)score-=3;else if(ch< -8)score-=3;else if(ch< -3)score+=0.5;
-   if(turn>=0.5&&turn<=5)score+=1.5;else if(turn>12)score-=2;
-   return {...c,preScore:Number(score.toFixed(3)),amountLiquidityScore:Number(amountScore.toFixed(2))};
+   // Valuation is a tie-breaker, not the dominant driver of a short-term thematic screen.
+   if(peKnown)score+=c.pe<=15?0.8:c.pe<=30?0.5:c.pe<=50?0.1:c.pe>100?-1:0;
+   if(Number.isFinite(c.pb)&&c.pb>0)score+=c.pb<=2?0.5:c.pb<=4?0.2:c.pb>10?-0.5:0;
+   // Prefer constructive short-term momentum without selecting stocks already in a one-day blow-off.
+   if(ch!=null){if(ch>=1&&ch<=4.5)score+=4;else if(ch>4.5&&ch<=7)score+=1.5;else if(ch>7)score-=5;else if(ch>=0&&ch<1)score+=1;else if(ch>=-2)score-=0.5;else score-=3;}
+   // Turnover and traded value proxy participation; they are not misrepresented as main-force flow.
+   if(turn!=null){if(turn>=1&&turn<=10)score+=3;else if(turn>=0.4&&turn<1)score+=1;else if(turn>10&&turn<=15)score+=0.5;else if(turn>15)score-=3;else score-=0.5;}
+   return {...c,preScore:Number(score.toFixed(3)),amountLiquidityScore:Number(amountScore.toFixed(2)),shortTermMomentumScore:ch==null?null:(ch>=1&&ch<=4.5?4:ch>4.5&&ch<=7?1.5:ch>7?-5:ch>=0?1:ch>=-2?-0.5:-3)};
   }).sort((a,b)=>b.preScore-a.preScore||(Number(b.amount)||0)-(Number(a.amount)||0)||(Number(b.turnover)||0)-(Number(a.turnover)||0));
   // Expensive history and risk checks are limited to four finalists selected from the broad-market scan.
   const flowChecked=ranked.slice(0,4).map(c=>({...c,flowHistory:null,flowHistoryError:'全市场行情初筛不含可验证个股资金流；进入深入分析后单独核验带日期的资金流历史'}));
@@ -937,7 +950,7 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    const hist=a.fundFlowHistory;
    const flowDateMs=Date.parse(hist?.latest?.date||hist?.rows?.at(-1)?.date||'');
    const flowAgeMs=Date.now()-flowDateMs;
-   const validHistory=!!(hist&&hist.period!=='snapshot-date-unverified'&&hist.cache?.status!=='stale-fallback'&&(hist.historyDays||0)>=5&&Number.isFinite(hist.cumulativeMainNetInflow)&&Number.isFinite(flowDateMs)&&flowAgeMs>=-86400000&&flowAgeMs<=7*86400000);
+   const validHistory=!!(hist&&hist.period!=='snapshot-date-unverified'&&hist.cache?.status!=='stale-fallback'&&(hist.historyDays||0)>=5&&Number.isFinite(hist.cumulativeMainNetInflow)&&Number.isFinite(flowDateMs)&&flowAgeMs>=-86400000&&flowAgeMs<=72*60*60*1000);
    const flowPositive=!!(validHistory&&hist.cumulativeMainNetInflow>0);
    const matchedSector=boards.filter(b=>Number.isFinite(b.sectorFlow?.flow));
    const sectorPositive=matchedSector.some(b=>b.sectorFlow.flow>0&&Number.isFinite(b.sectorFlow.changePct)&&b.sectorFlow.changePct>0);
