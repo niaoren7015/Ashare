@@ -1,3 +1,4 @@
+# Production deploy includes source freshness and sector-aware screen checks.
 name: Deploy A-share AI Tracker
 
 on:
