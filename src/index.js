@@ -760,6 +760,15 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    cachedData(db,'flow:'+code,60000,()=>fetchStockFlowHistory(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
   ]);
   if(!qResult.data)throw Error('实时行情不可用，不能安全生成个股分析：'+qResult.error);
+  const flowData=flowResult.data;
+  const flowLatestDate=flowData?.latest?.date||flowData?.rows?.at(-1)?.date||null;
+  const flowLatestMs=Date.parse(flowLatestDate||'');
+  const flowAgeHours=Number.isFinite(flowLatestMs)?(Date.now()-flowLatestMs)/3600000:null;
+  const flowIsStale=flowData?.cache?.status==='stale-fallback'||(Number.isFinite(flowAgeHours)&&flowAgeHours>72);
+  const flowHistoryValid=!!(flowData&&!flowIsStale&&flowData.period!=='snapshot-date-unverified'&&(flowData.historyDays||flowData.rows?.length||0)>=5&&Number.isFinite(flowLatestMs));
+  const usableFlowData=flowHistoryValid?flowData:null;
+  const usableFlowSnapshot=flowData&&!flowIsStale&&flowData.period==='snapshot-date-unverified'?{latest:flowData.latest,source:flowData.source,host:flowData.host,retrievedAt:flowData.latest?.retrievedAt||flowData.cache?.updatedAt||null,note:'接口未提供可核验的交易日期；仅作为未确认日期的快照，不计入多日资金流评分'}:null;
+  const usableFlowError=flowIsStale?'资金流缓存/记录已超过72小时新鲜度门槛，未作为实时数据使用':!flowHistoryValid&&!usableFlowSnapshot?(flowResult.error||'未取得通过日期和覆盖率校验的5日资金流历史'):null;
   const q=qResult.data,k=kResult.data,rows=k?.rows||[],last=rows.at(-1);
   const avg=n=>{const z=rows.slice(-n).map(x=>x.close).filter(Number.isFinite);return z.length?z.reduce((a,v)=>a+v,0)/z.length:null};
   const ma20=avg(20),ma60=avg(60),ma5=avg(5);
@@ -786,7 +795,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
    indicators:{ma5,ma20,ma60,trend:last&&ma20!=null&&ma60!=null?(last.close>ma20&&ma20>=ma60?'偏强':last.close<ma20&&ma20<=ma60?'偏弱':'震荡/待确认'):'技术趋势数据不足'},
    shortTermFactors,
    financialSnapshot:financeResult.data,financialError:financeResult.error,
-   fundFlow:flowResult.data,fundFlowError:flowResult.error,
+   fundFlow:usableFlowData,fundFlowSnapshot:usableFlowSnapshot,fundFlowError:usableFlowError,
    sectorContext:{boards,boardMembershipError:boardsResult.error,industryFlowSource:industryResult.data[0]?.source||null,industryFlowError:industryResult.error,industryFlowCoveragePct:industryResult.data.length?Math.round(industryResult.data.filter(x=>Number.isFinite(x.flow)).length/industryResult.data.length*100):0,industryFlowLeaders:(industryResult.data||[]).slice(0,15),conceptFlowSource:conceptResult.data[0]?.source||null,conceptFlowError:conceptResult.error,conceptFlowCoveragePct:conceptResult.data.length?Math.round(conceptResult.data.filter(x=>Number.isFinite(x.flow)).length/conceptResult.data.length*100):0,conceptFlowLeaders:(conceptResult.data||[]).slice(0,15),note:'行业/概念排行反映全市场板块资金，不等于该股自身净流入；只有 boards 明确匹配后才归因到个股'},
    officialAnnouncements:cninfoResult.data,officialAnnouncementsError:cninfoResult.error,
    relatedNews,recentMarketNews:marketNewsResult.data?.rows||[],newsFetchError:[stockNewsResult.error,stockNewsRelevanceNote,marketNewsResult.error].filter(Boolean).join('；')||null,
