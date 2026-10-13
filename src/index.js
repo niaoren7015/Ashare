@@ -503,9 +503,10 @@ async function fetchSectorFlowRanks(type='industry',options={}){
 async function fetchStockBoards(code,options={}){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const allHosts=['push2delay.eastmoney.com','push2.eastmoney.com','push2his.eastmoney.com','29.push2.eastmoney.com','79.push2.eastmoney.com'];
- // The delayed cluster is tried first because push2 has intermittently returned HTTP 502 in production.
  const quoteHosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
- for(const host of quoteHosts.slice(0,options.maxHosts?1:2)){
+ const found=new Map();
+ // f127 is only the primary industry label. Always also query slist for additional board/concept memberships.
+ for(const host of quoteHosts.slice(0,options.maxHosts?2:3)){
   try{
    const u=new URL('https://'+host+'/api/qt/stock/get');
    for(const [k,v] of Object.entries({secid:secid(code),fields:'f57,f58,f127,f116,f117,f84,f85,f189',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
@@ -513,13 +514,11 @@ async function fetchStockBoards(code,options={}){
    if(!r.ok)throw Error('stock/get '+host+' HTTP '+r.status);
    const d=(await r.json())?.data;if(!d)throw Error('stock/get '+host+' 无 data');
    const name=String(d.f127||'').trim();
-   if(name&&name.length>=2&&!/^\d+$/.test(name))return[{code:null,name,type:'industry',changePct:null,source:'eastmoney-stock-get-f127',verified:true}];
-   throw Error('stock/get '+host+' 未返回有效行业名称 f127');
+   if(name&&name.length>=2&&!/^\d+$/.test(name))found.set('name:'+name.toLowerCase(),{code:null,name,type:'industry',changePct:null,source:'eastmoney-stock-get-f127',verified:true});
+   break;
   }catch(e){errors.push(String(e?.message||e))}
  }
-
- const hosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
- for(const host of hosts){
+ for(const host of quoteHosts){
   try{
    const u=new URL('https://'+host+'/api/qt/slist/get');
    for(const [k,v] of Object.entries({secid:secid(code),spt:'3',pi:'0',pz:'200',po:'1',fltt:'2',invt:'2',fields:'f12,f14,f3,f128',ut:'fa5fd1943c7b386f172d6893dbbd1d0c',_:String(Date.now())}))u.searchParams.set(k,v);
@@ -530,13 +529,35 @@ async function fetchStockBoards(code,options={}){
    const d=body?.data?.diff??body?.data?.items??body?.data;
    const arr=Array.isArray(d)?d:(d&&typeof d==='object'?Object.values(d):[]);
    const rows=arr.map(x=>({code:String(x.f12||''),name:String(x.f14||''),changePct:x.f3==null?null:Number(x.f3),source:'eastmoney-stock-board-membership'})).filter(x=>x.code&&x.name);
-   if(rows.length)return rows;
+   if(rows.length){for(const row of rows)found.set('code:'+row.code,row);break;}
    throw Error('JSON有效但板块列表为空；rc='+(body?.rc??'未知'));
   }catch(e){errors.push(host+': '+String(e?.message||e))}
  }
+ if(found.size)return [...found.values()];
  throw Error('个股所属板块接口均未通过有效性校验：'+errors.join('；'));
 }
 
+async function fetchSectorConstituents(boardCode,options={}){
+ const code=String(boardCode||'').trim();
+ if(!/^BK\d{4,6}$/i.test(code))throw Error('板块代码格式不正确：'+code);
+ const hosts=['push2delay.eastmoney.com','push2.eastmoney.com','29.push2.eastmoney.com'];
+ const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/center/','accept':'application/json,text/plain,*/*'};
+ const max=options.maxHosts?Math.max(1,Math.min(hosts.length,options.maxHosts)):hosts.length,errors=[];
+ for(const host of hosts.slice(0,max)){
+  try{
+   const u=new URL('https://'+host+'/api/qt/clist/get');
+   for(const [k,v] of Object.entries({pn:'1',pz:'200',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs:'b:'+code,fields:'f12,f14,f2,f3,f6,f8,f10,f62',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(3000),cache:'no-store'});if(!r.ok)throw Error(host+' HTTP '+r.status);
+   const raw=(await r.text()).trim();if(!raw)throw Error(host+' 空响应');
+   let body;try{body=JSON.parse(raw)}catch{const m=raw.match(/^[^(]*\(([\s\S]*)\)\s*;?$/);if(!m)throw Error(host+' 返回非JSON/JSONP');body=JSON.parse(m[1])}
+   const diff=body?.data?.diff,arr=Array.isArray(diff)?diff:(diff&&typeof diff==='object'?Object.values(diff):[]);
+   const rows=arr.map(x=>({code:String(x.f12||''),name:String(x.f14||''),changePct:x.f3==null?null:Number(x.f3),amount:x.f6==null?null:Number(x.f6),turnover:x.f8==null?null:Number(x.f8),flow:x.f62==null?null:Number(x.f62),boardCode:code,source:host,fetchedAt:now()})).filter(x=>/^\d{6}$/.test(x.code)&&x.name);
+   if(rows.length)return rows;
+   throw Error(host+' 未返回有效成分股；rc='+(body?.rc??'未知'));
+  }catch(e){errors.push(String(e?.message||e))}
+ }
+ throw Error('板块成分股接口失败：'+errors.join('；'));
+}
 async function fetchEastmoneyAnnouncements(code){
  const u=new URL('https://np-anotice-stock.eastmoney.com/api/security/ann');
  for(const [k,v] of Object.entries({sr:'-1',page_size:'12',page_index:'1',ann_type:'A',client_source:'web',stock_list:code,f_node:'0',s_node:'0',_:String(Date.now())}))u.searchParams.set(k,v);
