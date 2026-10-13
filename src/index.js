@@ -521,12 +521,20 @@ async function fetchSectorBoardFlow(boardCode,options={}){
  }
  throw Error('板块代码 '+code+' 直连资金流接口失败：'+errors.join('；'));
 }
+
+async function loadSectorBoardFlow(db,boardCode){
+ const data=await cachedData(db,'sector-board-flow:'+boardCode,60000,()=>fetchSectorBoardFlow(boardCode,{maxHosts:3}));
+ const usable=data?.cache?.status!=='stale-fallback'&&Number.isFinite(data?.flow)&&Number.isFinite(data?.changePct)&&(Number.isFinite(data?.amount)&&data.amount>0||Number.isFinite(data?.price)&&data.price>0);
+ if(!usable)throw Error('板块直连接口没有返回可核验的当前行情字段，已拒绝使用旧缓存/默认零值');
+ return data;
+}
+
 async function enrichPrimaryBoardFlow(db,stockCode,boards){
  const primaryName=(boards||[]).find(b=>!b.code&&b.name)?.name;
  const primary=(boards||[]).find(b=>b.code&&primaryName&&String(b.name||'').trim()===String(primaryName).trim()&&!Number.isFinite(b.sectorFlow?.flow));
  if(!primary)return {boards,primaryBoardFlowError:null};
  try{
-  const flow=await cachedData(db,'sector-board-flow:'+primary.code,60000,()=>fetchSectorBoardFlow(primary.code,{maxHosts:3}));
+  const flow=await loadSectorBoardFlow(db,primary.code);
   primary.sectorFlow={...flow,type:'industry',matchedBy:'direct-board-code'};
   return {boards,primaryBoardFlowError:null};
  }catch(e){
@@ -728,7 +736,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
 }if(p==='/api/sector-board-flow'){
  const c=String(u.searchParams.get('code')||'').trim().toUpperCase();
  if(!/^BK\d{4,6}$/.test(c))return json({ok:false,error:'板块代码格式应为BK加4至6位数字'},400);
- try{const data=await cachedData(db,'sector-board-flow:'+c,60000,()=>fetchSectorBoardFlow(c,{maxHosts:3}));return json({ok:true,...data})}
+ try{const data=await loadSectorBoardFlow(db,c);return json({ok:true,...data})}
  catch(e){return json({ok:false,code:c,error:String(e?.message||e)},502)}
 }
 if(p==='/api/sector-constituents'){
