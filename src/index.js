@@ -902,12 +902,12 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   ]);
   const sectorRows=[...industryFlowResult.data,...conceptFlowResult.data];
   const sectorMap=new Map();for(const x of sectorRows){if(x.code)sectorMap.set('code:'+x.code,x);if(x.name)sectorMap.set('name:'+String(x.name).trim().toLowerCase(),x)}
-  const freshBoard=x=>{const t=Date.parse(x?.fetchedAt||'');const age=Date.now()-t;return Number.isFinite(t)&&age>=-86400000&&age<=72*60*60*1000;};
+  const freshBoard=x=>{const t=Date.parse(x?.fetchedAt||'');const age=Date.now()-t;return Number.isFinite(t)&&age>=-86400000&&age<=2*60*60*1000;};
   const hotIndustry=industryFlowResult.data.filter(x=>freshBoard(x)&&Number.isFinite(x.flow)&&x.flow>0&&Number.isFinite(x.changePct)&&x.changePct>0).sort((a,b)=>b.flow-a.flow).slice(0,3);
   const hotConcept=conceptFlowResult.data.filter(x=>freshBoard(x)&&Number.isFinite(x.flow)&&x.flow>0&&Number.isFinite(x.changePct)&&x.changePct>0).sort((a,b)=>b.flow-a.flow).slice(0,3);
   const hotBoards=[...new Map([...hotIndustry,...hotConcept].map(x=>[x.code,x])).values()];
   stage='读取热门资金板块成分股';
-  const constituentResults=await Promise.all(hotBoards.map(async board=>({board,...await cachedData(db,'sector-members:'+board.code,300000,()=>fetchSectorConstituents(board.code,{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})));
+  const constituentResults=await Promise.all(hotBoards.map(async board=>({board,...await cachedData(db,'sector-members:'+board.code,300000,()=>fetchSectorConstituents(board.code,{maxHosts:3})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})));
   const hotThemeByCode=new Map();
   for(const result of constituentResults){for(const member of result.data||[]){const entry={code:result.board.code,name:result.board.name,type:result.board.type,flow:result.board.flow,changePct:result.board.changePct,fetchedAt:result.board.fetchedAt};if(!hotThemeByCode.has(member.code))hotThemeByCode.set(member.code,[]);hotThemeByCode.get(member.code).push(entry);}}
   const themeCandidates=liquid.filter(c=>hotThemeByCode.has(c.code)&&Number.isFinite(c.changePct)&&c.changePct>=-3&&c.changePct<=8).map(c=>{
@@ -1026,7 +1026,7 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    const flowAgeMs=Date.now()-flowDateMs;
    const validHistory=!!(hist&&hist.period!=='snapshot-date-unverified'&&hist.cache?.status!=='stale-fallback'&&(hist.historyDays||0)>=5&&Number.isFinite(hist.cumulativeMainNetInflow)&&Number.isFinite(flowDateMs)&&flowAgeMs>=-86400000&&flowAgeMs<=72*60*60*1000);
    const flowPositive=!!(validHistory&&hist.cumulativeMainNetInflow>0);
-   const matchedSector=boards.filter(b=>{const t=Date.parse(b.sectorFlow?.fetchedAt||'');const age=Date.now()-t;return Number.isFinite(t)&&age>=-86400000&&age<=72*60*60*1000&&Number.isFinite(b.sectorFlow?.flow);});
+   const matchedSector=boards.filter(b=>{const t=Date.parse(b.sectorFlow?.fetchedAt||'');const age=Date.now()-t;return Number.isFinite(t)&&age>=-86400000&&age<=2*60*60*1000&&Number.isFinite(b.sectorFlow?.flow);});
    const sectorPositive=matchedSector.some(b=>b.sectorFlow.flow>0&&Number.isFinite(b.sectorFlow.changePct)&&b.sectorFlow.changePct>0);
    const sectorNegative=matchedSector.length>0&&matchedSector.every(b=>b.sectorFlow.flow<0);
    const finRows=a.financialSnapshot?.rows||[];
