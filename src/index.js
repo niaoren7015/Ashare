@@ -500,6 +500,41 @@ async function fetchSectorFlowRanks(type='industry',options={}){
  throw Error('板块资金流排行接口均未通过有效性校验：'+errors.join('；'));
 }
 
+async function fetchSectorBoardFlow(boardCode,options={}){
+ const code=String(boardCode||'').trim().toUpperCase();
+ if(!/^BK\d{4,6}$/.test(code))throw Error('板块代码格式不正确：'+code);
+ const hosts=['push2delay.eastmoney.com','push2.eastmoney.com','29.push2.eastmoney.com'];
+ const max=options.maxHosts?Math.max(1,Math.min(hosts.length,options.maxHosts)):hosts.length;
+ const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
+ for(const host of hosts.slice(0,max)){
+  try{
+   const u=new URL('https://'+host+'/api/qt/stock/get');
+   for(const [k,v] of Object.entries({secid:'90.'+code,fields:'f57,f58,f2,f3,f6,f62,f184',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(3000),cache:'no-store'});if(!r.ok)throw Error(host+' HTTP '+r.status);
+   const raw=(await r.text()).trim();if(!raw)throw Error(host+' 空响应');
+   let body;try{body=JSON.parse(raw)}catch{const m=raw.match(/^[^(]*\(([\s\S]*)\)\s*;?$/);if(!m)throw Error(host+' 返回非JSON/JSONP');body=JSON.parse(m[1])}
+   const d=body?.data;if(!d)throw Error(host+' 未返回板块 data');
+   const flowRaw=d.f62;
+   if(flowRaw==null||flowRaw===''||flowRaw==='-'||!Number.isFinite(Number(flowRaw)))throw Error(host+' 未返回有效板块净流入字段 f62');
+   return {code,name:String(d.f58||d.f57||code),price:d.f2==null?null:Number(d.f2),changePct:d.f3==null?null:Number(d.f3),amount:d.f6==null?null:Number(d.f6),flow:Number(flowRaw),flowRatio:d.f184==null?null:Number(d.f184),type:'industry',source:host,sourceMethod:'direct-board-stock-get',fetchedAt:now(),unit:'CNY'};
+  }catch(e){errors.push(String(e?.message||e))}
+ }
+ throw Error('板块代码 '+code+' 直连资金流接口失败：'+errors.join('；'));
+}
+async function enrichPrimaryBoardFlow(db,stockCode,boards){
+ const primaryName=(boards||[]).find(b=>!b.code&&b.name)?.name;
+ const primary=(boards||[]).find(b=>b.code&&primaryName&&String(b.name||'').trim()===String(primaryName).trim()&&!Number.isFinite(b.sectorFlow?.flow));
+ if(!primary)return {boards,primaryBoardFlowError:null};
+ try{
+  const flow=await cachedData(db,'sector-board-flow:'+primary.code,60000,()=>fetchSectorBoardFlow(primary.code,{maxHosts:3}));
+  primary.sectorFlow={...flow,type:'industry',matchedBy:'direct-board-code'};
+  return {boards,primaryBoardFlowError:null};
+ }catch(e){
+  primary.sectorFlowError=String(e?.message||e);
+  return {boards,primaryBoardFlowError:primary.sectorFlowError};
+ }
+}
+
 async function fetchStockBoards(code,options={}){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://quote.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const allHosts=['push2delay.eastmoney.com','push2.eastmoney.com','push2his.eastmoney.com','29.push2.eastmoney.com','79.push2.eastmoney.com'];
@@ -690,7 +725,13 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   const data=await cachedData(db,'market-news:'+category,60000,()=>fetchMarketNews(category));
   return json({ok:true,...data});
  }catch(e){return json({ok:false,category,error:String(e?.message||e)},502)}
-}if(p==='/api/sector-constituents'){
+}if(p==='/api/sector-board-flow'){
+ const c=String(u.searchParams.get('code')||'').trim().toUpperCase();
+ if(!/^BK\\d{4,6}$/.test(c))return json({ok:false,error:'板块代码格式应为BK加4至6位数字'},400);
+ try{const data=await cachedData(db,'sector-board-flow:'+c,60000,()=>fetchSectorBoardFlow(c,{maxHosts:3}));return json({ok:true,...data})}
+ catch(e){return json({ok:false,code:c,error:String(e?.message||e)},502)}
+}
+if(p==='/api/sector-constituents'){
  const c=String(u.searchParams.get('code')||'').trim().toUpperCase();
  if(!/^BK\d{4,6}$/.test(c))return json({ok:false,error:'板块代码格式应为BK加4至6位数字'},400);
  try{const data=await cachedData(db,'sector-members:'+c,300000,()=>fetchSectorConstituents(c,{maxHosts:3}));return json({ok:true,code:c,count:data.length,fetchedAt:data[0]?.fetchedAt||now(),source:data[0]?.source||null,rows:data})}
@@ -730,8 +771,9 @@ if(p==='/api/sector-flow'){
   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept')).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))
  ]);
  const sectors=[...ir.data,...cr.data],byCode=new Map(),byName=new Map();for(const x of sectors){if(x.code)byCode.set(String(x.code),x);if(x.name)byName.set(String(x.name).trim().toLowerCase(),x)}
- const boards=br.data.map(b=>({...b,sectorFlow:(b.code?byCode.get(String(b.code)):null)||byName.get(String(b.name||'').trim().toLowerCase())||null}));
- return json({ok:boards.length>0,code:c,checkedAt:now(),membershipSource:boards[0]?.source||null,boards,membershipError:br.error,industry:{count:ir.data.length,flowCoverage:ir.data.length?Math.round(ir.data.filter(x=>Number.isFinite(x.flow)).length/ir.data.length*100):0,error:ir.error},concept:{count:cr.data.length,flowCoverage:cr.data.length?Math.round(cr.data.filter(x=>Number.isFinite(x.flow)).length/cr.data.length*100):0,error:cr.error},note:'只有明确匹配的板块才附加板块资金；名称未匹配不等于板块资金接口不可用。'});
+ let boards=br.data.map(b=>({...b,sectorFlow:(b.code?byCode.get(String(b.code)):null)||byName.get(String(b.name||'').trim().toLowerCase())||null}));
+ const enriched=await enrichPrimaryBoardFlow(db,c,boards);boards=enriched.boards;
+ return json({ok:boards.length>0,code:c,checkedAt:now(),membershipSource:boards[0]?.source||null,boards,membershipError:br.error,primaryBoardFlowError:enriched.primaryBoardFlowError,industry:{count:ir.data.length,flowCoverage:ir.data.length?Math.round(ir.data.filter(x=>Number.isFinite(x.flow)).length/ir.data.length*100):0,error:ir.error},concept:{count:cr.data.length,flowCoverage:cr.data.length?Math.round(cr.data.filter(x=>Number.isFinite(x.flow)).length/cr.data.length*100):0,error:cr.error},note:'优先通过板块代码匹配排行；主行业未匹配时直连板块行情接口补查。'});
 }if(p==='/api/reports'){
  if(req.method==='GET'){
   const type=String(u.searchParams.get('type')||'');if(type&&!['ai_analysis','ai_screen','holdings_report'].includes(type))return json({error:'报告类型不受支持'},400);
@@ -815,7 +857,8 @@ if(p==='/api/sector-flow'){
   ]);
   const sectorRows=[...industryResult.data,...conceptResult.data];
   const sectorMap=new Map();for(const x of sectorRows){if(x.code)sectorMap.set('code:'+x.code,x);if(x.name)sectorMap.set('name:'+String(x.name).trim().toLowerCase(),x)}
-  const boards=(boardsResult.data||[]).map(x=>({...x,sectorFlow:(x.code?sectorMap.get('code:'+x.code):null)||sectorMap.get('name:'+String(x.name||'').trim().toLowerCase())||null}));
+  let boards=(boardsResult.data||[]).map(x=>({...x,sectorFlow:(x.code?sectorMap.get('code:'+x.code):null)||sectorMap.get('name:'+String(x.name||'').trim().toLowerCase())||null}));
+  const primaryBoardEnrichment=await enrichPrimaryBoardFlow(db,code,boards);boards=primaryBoardEnrichment.boards;
   const a={
    quote:q,kline:rows.slice(-120),klineSource:k?.source||null,klineFetchedAt:k?.fetchedAt||null,klineLatencyMs:k?.latencyMs||null,klineError:kResult.error,
    klineAdjustment:k?.adjustment||'unknown',klineQuality:k?.quality||null,klineWarning:k?.warning||null,
@@ -823,7 +866,7 @@ if(p==='/api/sector-flow'){
    shortTermFactors,
    financialSnapshot:financeResult.data,financialError:financeResult.error,
    fundFlow:usableFlowData,fundFlowSnapshot:usableFlowSnapshot,fundFlowError:usableFlowError,
-   sectorContext:{boards,boardMembershipError:boardsResult.error,industryFlowSource:industryResult.data[0]?.source||null,industryFlowError:industryResult.error,industryFlowCoveragePct:industryResult.data.length?Math.round(industryResult.data.filter(x=>Number.isFinite(x.flow)).length/industryResult.data.length*100):0,industryFlowLeaders:(industryResult.data||[]).slice(0,15),conceptFlowSource:conceptResult.data[0]?.source||null,conceptFlowError:conceptResult.error,conceptFlowCoveragePct:conceptResult.data.length?Math.round(conceptResult.data.filter(x=>Number.isFinite(x.flow)).length/conceptResult.data.length*100):0,conceptFlowLeaders:(conceptResult.data||[]).slice(0,15),note:'行业/概念排行反映全市场板块资金，不等于该股自身净流入；只有 boards 明确匹配后才归因到个股'},
+   sectorContext:{boards,boardMembershipError:boardsResult.error,primaryBoardFlowError:primaryBoardEnrichment.primaryBoardFlowError,industryFlowSource:industryResult.data[0]?.source||null,industryFlowError:industryResult.error,industryFlowCoveragePct:industryResult.data.length?Math.round(industryResult.data.filter(x=>Number.isFinite(x.flow)).length/industryResult.data.length*100):0,industryFlowLeaders:(industryResult.data||[]).slice(0,15),conceptFlowSource:conceptResult.data[0]?.source||null,conceptFlowError:conceptResult.error,conceptFlowCoveragePct:conceptResult.data.length?Math.round(conceptResult.data.filter(x=>Number.isFinite(x.flow)).length/conceptResult.data.length*100):0,conceptFlowLeaders:(conceptResult.data||[]).slice(0,15),note:'行业/概念排行反映全市场板块资金，不等于该股自身净流入；只有 boards 明确匹配后才归因到个股'},
    officialAnnouncements:cninfoResult.data,officialAnnouncementsError:cninfoResult.error,
    relatedNews,recentMarketNews:marketNewsResult.data?.rows||[],newsFetchError:[stockNewsResult.error,stockNewsRelevanceNote,marketNewsResult.error].filter(Boolean).join('；')||null,
    dataCompleteness:{
