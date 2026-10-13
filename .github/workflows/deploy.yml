@@ -1,5 +1,6 @@
 # Production deploy includes source freshness and sector-aware screen checks.
 # [screen-e2e] Post-fix acceptance verifies hot-sector constituent selection.
+# Final acceptance includes the shareholder-source availability guard.
 name: Deploy A-share AI Tracker
 
 on:
