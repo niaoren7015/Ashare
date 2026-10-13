@@ -690,7 +690,13 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   const data=await cachedData(db,'market-news:'+category,60000,()=>fetchMarketNews(category));
   return json({ok:true,...data});
  }catch(e){return json({ok:false,category,error:String(e?.message||e)},502)}
-}if(p==='/api/sector-flow'){
+}if(p==='/api/sector-constituents'){
+ const c=String(u.searchParams.get('code')||'').trim().toUpperCase();
+ if(!/^BK\\d{4,6}$/.test(c))return json({ok:false,error:'板块代码格式应为BK加4至6位数字'},400);
+ try{const data=await cachedData(db,'sector-members:'+c,300000,()=>fetchSectorConstituents(c,{maxHosts:3}));return json({ok:true,code:c,count:data.length,fetchedAt:data[0]?.fetchedAt||now(),source:data[0]?.source||null,rows:data})}
+ catch(e){return json({ok:false,code:c,error:String(e?.message||e)},502)}
+}
+if(p==='/api/sector-flow'){
  const type=String(u.searchParams.get('type')||'industry');
  if(!['industry','concept'].includes(type))return json({ok:false,error:'type 应为 industry 或 concept'},400);
  try{const data=await cachedData(db,'sector-flow:'+type,60000,()=>fetchSectorFlowRanks(type));return json({ok:true,type,fetchedAt:now(),count:data.length,flowCoverage:data.length?Math.round(data.filter(x=>Number.isFinite(x.flow)).length/data.length*100):0,rows:data})}
@@ -834,7 +840,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
   };
   const messages=[
    {role:'system',content:'你是A股短线操盘与风险控制分析师。你的工作不是把数据念给用户听，而是做判断并给操作方案。只根据输入，不编造事实。报告控制在约900—1300字，先给结论，不要开头铺陈数据。固定结构：\n## 先说结论\n用一句话明确“可埋伏小仓/等待信号/持有观察/减仓防守/回避”，给出判断强度（高/中/低）和最关键理由。\n## 现在怎么做\n分“空仓者”和“已有持仓者”给明确动作；空仓者说明现在是否值得关注、什么条件才考虑首笔；持仓者说明继续持有/减仓/止损观察的条件；若数据不足，直说暂不动作。\n## 关键触发价与失效条件\n最多列3个关键价位或区间，必须来自真实K线、均线或近期高低点；没有可靠数据就不给数字。写清触发后做什么，以及跌破/失败后怎么办。仓位建议保守、条件化，不把单一信号当买点。\n## 为什么这样判断\n用最多4条人话解释：资金方向、所属板块强弱、量价趋势、公告/新闻催化、基本面估值。只写本轮真正核验到且影响决策的证据；板块归属不明、资金流缺失、新闻未抓取都必须明确说“未核验”，不能用模型常识补全。陈旧缓存、日期未核实快照不能当作当前资金方向。\n## 什么情况会推翻判断\n列出最重要的2—3个风险/反向信号。\n## 证据可信度\n最后用一行说明行情、K线、资金、板块、公告/新闻哪些可靠、哪些缺失；详细源错误不要堆在正文，除非它直接改变操作结论。禁止逐项抄录所有因子，禁止用“观察优先级”掩盖没有资金/板块依据，禁止把综合分称作胜率。仓位纪律：单票≤5%，总仓位≤5成；节前≤4成。单日涨幅>7%不立即建仓。原则上-5%硬止损，只有A级且核心逻辑证据充分时才可讨论放宽至-8%。建仓后3—5个交易日无正向催化/走势验证，减半仓重新评估。每个建议给出仓位上限、止损位和重新评估条件。输出简洁、直接、可执行；不构成收益保证。'},
-   {role:'user',content:'请分析A股个股 '+code+'。以下是后端实际抓取数据；null/空数组表示缺失，不得补猜。'+JSON.stringify({generatedAt:now(),analysis:a,financialSnapshot:a.financialSnapshot,financialError:a.financialError,fundFlow:a.fundFlow,fundFlowError:a.fundFlowError,sectorContext:a.sectorContext,officialAnnouncements:a.officialAnnouncements,officialAnnouncementsError:a.officialAnnouncementsError,relatedNews:a.relatedNews,recentMarketNews:a.recentMarketNews,newsFetchError:a.newsFetchError,sourceAudit:a.dataCompleteness.sourceAudit,importantDataPolicy:'当前没有接入可验证的机构持仓、龙虎榜明细、股东增减持/质押结构化历史；不要声称已查到。请把巨潮公告标题作为待核验线索，不要当作公告全文。'} )}
+   {role:'user',content:'请分析A股个股 '+code+'。以下是后端实际抓取数据；null/空数组表示缺失，不得补猜。'+JSON.stringify({generatedAt:now(),analysis:a,financialSnapshot:a.financialSnapshot,financialError:a.financialError,fundFlow:a.fundFlow,fundFlowError:a.fundFlowError,sectorContext:a.sectorContext,officialAnnouncements:a.officialAnnouncements,officialAnnouncementsError:a.officialAnnouncementsError,relatedNews:a.relatedNews,recentMarketNews:a.recentMarketNews,newsFetchError:a.newsFetchError,shareholderChangeAudit:(()=>{const all=[...(a.officialAnnouncements?.rows||[]),...(a.relatedNews||[])];const hits=all.filter(x=>/股东.{0,8}(?:增持|减持)|(?:增持|减持).{0,10}股东|持股变动|权益变动|股份变动|大宗交易|集中竞价/.test(String(x.title||'')+' '+String(x.summary||'')));return{status:hits.length?'found-clues':'no-record-found-in-searched-sources',statement:hits.length?'检索到股东增减持/持股变动相关公告或新闻线索，需核验正文和实施状态':'在本次检索到的公告和相关新闻中未发现股东增减持相关记录（不代表绝对不存在）',evidence:hits.slice(0,10).map(x=>({title:x.title||'',date:x.date||x.publishedAt||null,url:x.url||null,source:x.source||null}))}})(),sourceAudit:a.dataCompleteness.sourceAudit,importantDataPolicy:'本项目不要求机构持仓和龙虎榜数据，不要编造或声称已核验这些数据。股东增减持只依据本次抓取到的公告标题/相关新闻线索；若未检索到相关记录，明确写“在本次检索到的公告和相关新闻中未发现股东增减持相关记录”，不得扩大为绝对不存在。公告标题只是线索，不等于公告全文；未接入结构化质押数据时必须标为未知。'} )}
   ];
   if(b.stream===true)return streamAIResponse(cfg,messages,async({content,generatedAt})=>{await db.prepare('INSERT INTO reports(code,report_type,payload,created_at) VALUES(?,?,?,?)').bind(code,'ai_analysis',JSON.stringify({model:cfg.ai_model,content,generatedAt,source:a}),generatedAt).run()});
   const content=await callAI(cfg,messages,65000,5000);
@@ -891,8 +897,8 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   const valuePool=liquid.filter(c=>Number.isFinite(c.changePct)&&c.changePct>=0&&c.changePct<=4.5&&Number.isFinite(c.pe)&&c.pe>0&&c.pe<=35).sort((a,b)=>b.preScore-a.preScore);
   stage='读取行业/概念板块资金排行';
   const [industryFlowResult,conceptFlowResult]=await Promise.all([
-   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
-   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))
+   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry',{maxHosts:3})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
+   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept',{maxHosts:3})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))
   ]);
   const sectorRows=[...industryFlowResult.data,...conceptFlowResult.data];
   const sectorMap=new Map();for(const x of sectorRows){if(x.code)sectorMap.set('code:'+x.code,x);if(x.name)sectorMap.set('name:'+String(x.name).trim().toLowerCase(),x)}
@@ -985,10 +991,12 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    if(revenueUpProfitDown)flags.push({type:'增收不增利',severity:'medium',detail:'最新可用财务快照显示营收增长但净利润同比下滑'});
    const pledgeStatus='未接入可验证的控股股东质押比例结构化数据';
    const unlockStatus=unlockRows.length?'公告中存在限售股上市流通线索，需从正文确认实际上市日期是否在未来30天':'未能仅凭本次公告标题确认未来30天解禁情况';
+   const shareholderChangeRows=[...textRows,...(item.relatedNews||[])].filter(x=>/股东.{0,8}(?:增持|减持)|(?:增持|减持).{0,10}股东|持股变动|权益变动|股份变动|大宗交易|集中竞价/.test(String(x.title||'')+' '+String(x.summary||'')));
+   const shareholderChangeStatus=shareholderChangeRows.length?'检索到股东增减持/持股变动相关公告或新闻线索，需核验正文和实施状态':'在本次检索到的公告标题和相关新闻中未发现股东增减持相关记录（不代表绝对不存在）';
    const announcementAvailable=!!ann?.data&&rows.length>0;
    const veto=flags.some(x=>x.severity==='veto')||flags.some(x=>x.type==='减持风险');
    const unknowns=[...(!announcementAvailable?['公告风险未核验']:[]),pledgeStatus,...(!unlockRows.length?['未来30天解禁未完成结构化核验']:[])];
-   item.riskAudit={source:ann?.data?.source||null,fetchedAt:ann?.data?.fetchedAt||null,announcementAvailable,announcementError:ann?.error||null,checkedRecentAnnouncementCount:textRows.length,flags,unlockClues:unlockRows,unlockStatus,pledgeStatus,fiveDayMainNetInflow:fiveDayFlow,persistentFiveDayOutflow:persistentOutflow,revenueUpProfitDown,veto,unknowns,announcementTitles:textRows.slice(0,8)};
+   item.riskAudit={source:ann?.data?.source||null,fetchedAt:ann?.data?.fetchedAt||null,announcementAvailable,announcementError:ann?.error||null,checkedRecentAnnouncementCount:textRows.length,flags,unlockClues:unlockRows,unlockStatus,pledgeStatus,shareholderChangeStatus,shareholderChangeEvidence:shareholderChangeRows.slice(0,8),fiveDayMainNetInflow:fiveDayFlow,persistentFiveDayOutflow:persistentOutflow,revenueUpProfitDown,veto,unknowns,announcementTitles:textRows.slice(0,8)};
   }
   // A bounded, single-host 5-day flow check for the five shortlisted names. No undated snapshot fallback.
   const candidateFlowResults=await Promise.all(results.map(async item=>cachedData(db,'screen-flow-history:'+item.code,60000,()=>fetchStockFlowHistory(item.code,{maxHosts:3,historyOnly:true})).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
