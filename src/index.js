@@ -884,35 +884,49 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    if(turn!=null){if(turn>=1&&turn<=10)score+=3;else if(turn>=0.4&&turn<1)score+=1;else if(turn>10&&turn<=15)score+=0.5;else if(turn>15)score-=3;else score-=0.5;}
    return {...c,preScore:Number(score.toFixed(3)),amountLiquidityScore:Number(amountScore.toFixed(2)),shortTermMomentumScore:ch==null?null:(ch>=1&&ch<=4.5?4:ch>4.5&&ch<=7?1.5:ch>7?-5:ch>=0?1:ch>=-2?-0.5:-3)};
   }).sort((a,b)=>b.preScore-a.preScore||(Number(b.amount)||0)-(Number(a.amount)||0)||(Number(b.turnover)||0)-(Number(a.turnover)||0));
-  // Build a small, diversified shortlist from the full market; validate sector-flow alignment before spending requests on deep analysis.
-  const preliminary=[];
-  const addPreliminary=pool=>{const found=pool.find(c=>!preliminary.some(x=>x.code===c.code));if(found&&preliminary.length<5)preliminary.push(found);};
-  const liquid=ranked.filter(c=>Number.isFinite(c.amount)&&c.amount>=80000000&&Number.isFinite(c.turnover)&&c.turnover>=0.5&&c.turnover<=12);
+  // Sector-first screen: discover actual high-inflow boards and their constituents before choosing individual stocks.
+  const liquid=ranked.filter(c=>Number.isFinite(c.amount)&&c.amount>=30000000&&Number.isFinite(c.turnover)&&c.turnover>=0.3&&c.turnover<=15);
   const momentumPool=liquid.filter(c=>Number.isFinite(c.changePct)&&c.changePct>=1&&c.changePct<=7).sort((a,b)=>(b.shortTermMomentumScore||0)-(a.shortTermMomentumScore||0)||b.preScore-a.preScore);
   const activePool=liquid.filter(c=>Number.isFinite(c.changePct)&&c.changePct>=-1&&c.changePct<=5).sort((a,b)=>(Number(b.turnover)||0)-(Number(a.turnover)||0)||b.preScore-a.preScore);
   const valuePool=liquid.filter(c=>Number.isFinite(c.changePct)&&c.changePct>=0&&c.changePct<=4.5&&Number.isFinite(c.pe)&&c.pe>0&&c.pe<=35).sort((a,b)=>b.preScore-a.preScore);
-  addPreliminary(momentumPool);
-  addPreliminary(activePool);
-  addPreliminary(valuePool);
-  for(const c of ranked){if(preliminary.length>=5)break;addPreliminary([c]);}
-  stage='预核验候选股所属板块与行业/概念资金流';
-  const [industryFlowResult,conceptFlowResult,boardResults]=await Promise.all([
-   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry',{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
-   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept',{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
-   Promise.all(preliminary.map(async item=>({code:item.code,...await cachedData(db,'stock-boards:'+item.code,300000,()=>fetchStockBoards(item.code,{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})))
+  stage='读取行业/概念板块资金排行';
+  const [industryFlowResult,conceptFlowResult]=await Promise.all([
+   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
+   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))
   ]);
   const sectorRows=[...industryFlowResult.data,...conceptFlowResult.data];
   const sectorMap=new Map();for(const x of sectorRows){if(x.code)sectorMap.set('code:'+x.code,x);if(x.name)sectorMap.set('name:'+String(x.name).trim().toLowerCase(),x)}
+  const freshBoard=x=>{const t=Date.parse(x?.fetchedAt||'');const age=Date.now()-t;return Number.isFinite(t)&&age>=-86400000&&age<=72*60*60*1000;};
+  const hotIndustry=industryFlowResult.data.filter(x=>freshBoard(x)&&Number.isFinite(x.flow)&&x.flow>0&&Number.isFinite(x.changePct)&&x.changePct>0).sort((a,b)=>b.flow-a.flow).slice(0,3);
+  const hotConcept=conceptFlowResult.data.filter(x=>freshBoard(x)&&Number.isFinite(x.flow)&&x.flow>0&&Number.isFinite(x.changePct)&&x.changePct>0).sort((a,b)=>b.flow-a.flow).slice(0,3);
+  const hotBoards=[...new Map([...hotIndustry,...hotConcept].map(x=>[x.code,x])).values()];
+  stage='读取热门资金板块成分股';
+  const constituentResults=await Promise.all(hotBoards.map(async board=>({board,...await cachedData(db,'sector-members:'+board.code,300000,()=>fetchSectorConstituents(board.code,{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})));
+  const hotThemeByCode=new Map();
+  for(const result of constituentResults){for(const member of result.data||[]){const entry={code:result.board.code,name:result.board.name,type:result.board.type,flow:result.board.flow,changePct:result.board.changePct,fetchedAt:result.board.fetchedAt};if(!hotThemeByCode.has(member.code))hotThemeByCode.set(member.code,[]);hotThemeByCode.get(member.code).push(entry);}}
+  const themeCandidates=liquid.filter(c=>hotThemeByCode.has(c.code)&&Number.isFinite(c.changePct)&&c.changePct>=-3&&c.changePct<=8).map(c=>{
+   const themes=hotThemeByCode.get(c.code)||[];
+   const momentum=Number(c.shortTermMomentumScore)||0;
+   const themeScore=Math.min(20,themes.length*8)+(c.changePct>=1&&c.changePct<=5?4:c.changePct>5&&c.changePct<=8?1:0);
+   return {...c,preScore:Number((c.preScore+themeScore).toFixed(3)),preThemeScore:themeScore,hotThemes:themes,preThemeEvidence:{boards:themes.slice(0,5),positiveBoardCount:themes.length},flowHistory:null,flowHistoryError:'正在核验通过日期校验的个股主力资金流历史',shortTermMomentumScore:momentum};
+  }).sort((a,b)=>(b.preThemeScore||0)-(a.preThemeScore||0)||(b.shortTermMomentumScore||0)-(a.shortTermMomentumScore||0)||b.preScore-a.preScore);
+  const preliminary=[];
+  const addPreliminary=(pool,limit=1)=>{let added=0;for(const c of pool){if(preliminary.some(x=>x.code===c.code))continue;preliminary.push(c);added++;if(preliminary.length>=5||added>=limit)break;}};
+  // Thematic stocks from the strongest live-flow boards get first look; other momentum/liquidity profiles fill remaining slots.
+  addPreliminary(themeCandidates,3);
+  addPreliminary(momentumPool,1);
+  addPreliminary(activePool,1);
+  addPreliminary(valuePool,1);
+  for(const c of ranked){if(preliminary.length>=5)break;addPreliminary([c],1);}
   const preliminaryScored=preliminary.map(c=>{
-   const found=boardResults.find(x=>x.code===c.code);
-   const boards=(found?.data||[]).map(b=>({...b,sectorFlow:(b.code?sectorMap.get('code:'+b.code):null)||sectorMap.get('name:'+String(b.name||'').trim().toLowerCase())||null}));
-   const freshSectorFlow=b=>{const t=Date.parse(b.sectorFlow?.fetchedAt||'');const age=Date.now()-t;return Number.isFinite(t)&&age>=-86400000&&age<=72*60*60*1000;};
-   const positive=boards.filter(b=>freshSectorFlow(b)&&Number.isFinite(b.sectorFlow?.flow)&&b.sectorFlow.flow>0&&Number.isFinite(b.sectorFlow.changePct)&&b.sectorFlow.changePct>0);
-   const negative=boards.filter(b=>freshSectorFlow(b)&&Number.isFinite(b.sectorFlow?.flow)&&b.sectorFlow.flow<0);
-   const themeScore=Math.min(12,positive.length*4)-(negative.length&&!positive.length?4:0);
-   return {...c,preScore:Number((c.preScore+themeScore).toFixed(3)),preThemeScore:themeScore,preThemeEvidence:{boards:boards.map(b=>({name:b.name,flow:b.sectorFlow?.flow,changePct:b.sectorFlow?.changePct,type:b.sectorFlow?.type})).slice(0,5),positiveBoardCount:positive.length},flowHistory:null,flowHistoryError:'正在核验通过日期校验的个股主力资金流历史'};
-  }).sort((a,b)=>b.preScore-a.preScore||(Number(b.amount)||0)-(Number(a.amount)||0));
+   const themes=c.hotThemes||[];
+   const matched=themes.filter(t=>freshBoard(t)&&Number.isFinite(t.flow)&&t.flow>0&&Number.isFinite(t.changePct)&&t.changePct>0);
+   const themeScore=Math.min(20,matched.length*8);
+   return {...c,preScore:Number((c.preScore+themeScore).toFixed(3)),preThemeScore:Math.max(Number(c.preThemeScore)||0,themeScore),preThemeEvidence:{boards:themes.slice(0,5),positiveBoardCount:matched.length},flowHistory:null,flowHistoryError:'正在核验通过日期校验的个股主力资金流历史'};
+  }).sort((a,b)=>(b.preThemeScore||0)-(a.preThemeScore||0)||b.preScore-a.preScore||(Number(b.amount)||0)-(Number(a.amount)||0));
   const chosen=preliminaryScored.slice(0,4);
+  stage='核验最终候选股所属板块';
+  const boardResults=await Promise.all(chosen.map(async item=>({code:item.code,...await cachedData(db,'stock-boards:'+item.code,300000,()=>fetchStockBoards(item.code,{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})));
   stage='读取最终候选股行情和日K线';
   // Fetch actual quote + daily bars for four finalists, keeping the request budget bounded.
   const results=await Promise.all(chosen.map(async c=>{
