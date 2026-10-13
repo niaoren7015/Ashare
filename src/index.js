@@ -692,7 +692,7 @@ async function api(req,env){const u=new URL(req.url),p=u.pathname,db=env.DB;if(d
  }catch(e){return json({ok:false,category,error:String(e?.message||e)},502)}
 }if(p==='/api/sector-constituents'){
  const c=String(u.searchParams.get('code')||'').trim().toUpperCase();
- if(!/^BK\\d{4,6}$/.test(c))return json({ok:false,error:'板块代码格式应为BK加4至6位数字'},400);
+ if(!/^BK\d{4,6}$/.test(c))return json({ok:false,error:'板块代码格式应为BK加4至6位数字'},400);
  try{const data=await cachedData(db,'sector-members:'+c,300000,()=>fetchSectorConstituents(c,{maxHosts:3}));return json({ok:true,code:c,count:data.length,fetchedAt:data[0]?.fetchedAt||now(),source:data[0]?.source||null,rows:data})}
  catch(e){return json({ok:false,code:c,error:String(e?.message||e)},502)}
 }
