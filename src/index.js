@@ -417,7 +417,7 @@ async function fetchScreenCandidates(db,sessionId){
 
 async function fetchStockFlowHistory(code,options={}){
  code=String(code||'').trim();
- if(!/^\\d{6}$/.test(code))throw Error('股票代码应为6位数字');
+ if(!/^\d{6}$/.test(code))throw Error('股票代码应为6位数字');
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  // Keep this list explicit: these are host failovers for the same documented endpoint, not three different data providers.
  const allHosts=['push2his.eastmoney.com','push2.eastmoney.com','push2delay.eastmoney.com'];
@@ -432,7 +432,7 @@ async function fetchStockFlowHistory(code,options={}){
    const p=String(line||'').split(',');
    const date=String(p[0]||'').trim();
    const mainNetInflow=numberOrNull(p[1]);
-   if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(date)||!Number.isFinite(Date.parse(date+'T00:00:00Z'))||mainNetInflow==null)continue;
+   if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!Number.isFinite(Date.parse(date+'T00:00:00Z'))||mainNetInflow==null)continue;
    byDate.set(date,{date,mainNetInflow,smallNetInflow:numberOrNull(p[2]),mediumNetInflow:numberOrNull(p[3]),largeNetInflow:numberOrNull(p[4]),superLargeNetInflow:numberOrNull(p[5]),mainNetInflowPct:numberOrNull(p[6]),unit:'CNY'});
   }
   const rows=[...byDate.values()].sort((a,b)=>a.date.localeCompare(b.date));
