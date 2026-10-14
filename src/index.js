@@ -552,16 +552,47 @@ async function fetchSectorBoardFlow(boardCode,options={}){
  throw Error('板块代码 '+code+' 直连资金流接口失败：'+errors.join('；'));
 }
 
+async function fetchSectorFlowBoardByCode(boardCode,type='industry'){
+ const target=String(boardCode||'').trim().toUpperCase();
+ const fs=type==='concept'?'m:90+t:3':'m:90+t:2';
+ const hosts=['17.push2.eastmoney.com','push2.eastmoney.com','push2delay.eastmoney.com'];
+ const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'};
+ const errors=[];
+ for(const host of hosts.slice(0,2)){
+  try{
+   for(let pn=1;pn<=6;pn++){
+    const u=new URL('https://'+host+'/api/qt/clist/get');
+    for(const [k,v] of Object.entries({pn:String(pn),pz:'100',po:'1',np:'1',fltt:'2',invt:'2',fid:'f3',fs,fields:'f12,f14,f2,f3,f6,f62,f184',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
+    const r=await fetch(u,{headers,signal:AbortSignal.timeout(2500),cache:'no-store'});
+    if(!r.ok)throw Error(host+' HTTP '+r.status+' page '+pn);
+    const raw=(await r.text()).trim();if(!raw)throw Error(host+' 空响应 page '+pn);
+    let body;try{body=JSON.parse(raw)}catch{const m=raw.match(/^[^(]*\(([\s\S]*)\)\s*;?$/);if(!m)throw Error(host+' 返回非JSON page '+pn);body=JSON.parse(m[1])}
+    const d=body?.data?.diff,rows=Array.isArray(d)?d:(d&&typeof d==='object'?Object.values(d):[]);
+    const found=rows.find(x=>String(x.f12||'').trim().toUpperCase()===target);
+    if(found){
+     const flow=found.f62==null||found.f62===''||found.f62==='-'?null:Number(found.f62);
+     const changePct=found.f3==null||found.f3===''||found.f3==='-'?null:Number(found.f3);
+     const amount=found.f6==null||found.f6===''||found.f6==='-'?null:Number(found.f6);
+     const price=found.f2==null||found.f2===''||found.f2==='-'?null:Number(found.f2);
+     if(!Number.isFinite(flow)||!Number.isFinite(changePct)||!((Number.isFinite(amount)&&amount>0)||(Number.isFinite(price)&&price>0)))throw Error(target+' 在板块列表找到但资金/行情字段不完整');
+     return{code:target,name:String(found.f14||target),price:Number.isFinite(price)?price:null,changePct,amount:Number.isFinite(amount)?amount:null,flow,flowRatio:found.f184==null||found.f184===''?null:Number(found.f184),type,source:host,sourceMethod:'sector-code-paginated-clist',matchedBy:'exact-board-code',fetchedAt:now(),unit:'CNY'};
+    }
+    if(rows.length<40)break;
+   }
+  }catch(e){errors.push(host+': '+String(e?.message||e))}
+ }
+ throw Error('板块排行中未找到 '+target+' 的有效资金流记录（按代码分页检索）；'+errors.join('；'));
+}
+
 async function loadSectorBoardFlow(db,boardCode){
  // Prefer the already-normalized industry/concept rankings before making a dedicated board quote call.
  // This avoids a fragile secid=90.BKxxxx request when the same board is present in clist/get.
  const lookupErrors=[];
  for(const type of ['industry','concept']){
   try{
-   const ranked=await cachedData(db,'sector-board-lookup:v1:'+type,60000,()=>fetchSectorFlowRanks(type,{maxHosts:4,fid:'f3'}));
-   const match=(Array.isArray(ranked)?ranked:[]).find(x=>String(x.code||'').toUpperCase()===String(boardCode).toUpperCase());
+   const match=await cachedData(db,'sector-board-lookup:v2:'+type+':'+boardCode,60000,()=>fetchSectorFlowBoardByCode(boardCode,type));
    if(match&&Number.isFinite(match.flow)&&Number.isFinite(match.changePct)&&(Number.isFinite(match.amount)&&match.amount>0||Number.isFinite(match.price)&&match.price>0)){
-    return{...match,code:String(boardCode).toUpperCase(),source:match.source||'eastmoney-sector-ranking',sourceMethod:'matched-sector-ranking',matchedBy:'board-code',fetchedAt:match.fetchedAt||now(),unit:'CNY'};
+    return{...match,code:String(boardCode).toUpperCase(),source:match.source||'eastmoney-sector-ranking',sourceMethod:match.sourceMethod||'sector-code-paginated-clist',matchedBy:'exact-board-code',fetchedAt:match.fetchedAt||now(),unit:'CNY'};
    }
   }catch(e){lookupErrors.push(type+': '+String(e?.message||e))}
  }
