@@ -244,7 +244,7 @@ async function quoteIndex(code){
  const sec=(code==='000001'?'1.':'0.')+code;
  try{
   const u=new URL('https://push2.eastmoney.com/api/qt/stock/get');u.searchParams.set('secid',sec);u.searchParams.set('fields','f43,f44,f45,f46,f47,f48,f57,f58,f60');u.searchParams.set('ut','fa5fd1943c7b386f172d6893dbbd1d0c');
-  const r=await fetch(u,{headers,signal:AbortSignal.timeout(3500),cache:'no-store'});if(!r.ok)throw Error('东方财富 HTTP '+r.status);
+  const r=await fetch(u,{headers,signal:AbortSignal.timeout(2000),cache:'no-store'});if(!r.ok)throw Error('东方财富 HTTP '+r.status);
   const d=(await r.json())?.data;if(!d)throw Error('东方财富指数数据为空');
   const n=v=>v==null?null:Number(v)/100,price=n(d.f43),prevClose=n(d.f60);if(!(price>0&&prevClose>0))throw Error('东方财富指数点位字段无效');
   return{code,name:d.f58||code,price,open:n(d.f46),high:n(d.f44),low:n(d.f45),prevClose,changePct:(price/prevClose-1)*100,volume:d.f47==null?null:Number(d.f47),amount:d.f48==null?null:Number(d.f48),source:'eastmoney',fetchedAt:now(),latencyMs:Date.now()-started};
@@ -422,10 +422,9 @@ async function fetchStockFlowHistory(code,options={}){
  // Eastmoney has used two flow-history route variants. Pair each route with a host that supports it;
  // rotating host names while repeating a single invalid path is not meaningful failover.
  const sources=[
-  {host:'push2.eastmoney.com',path:'/api/qt/stock/fflow/kline/get'},
   {host:'push2his.eastmoney.com',path:'/api/qt/stock/fflow/daykline/get'},
-  {host:'push2his.eastmoney.com',path:'/api/qt/stock/fflow/kline/get'},
-  {host:'push2.eastmoney.com',path:'/api/qt/stock/fflow/daykline/get'}
+  {host:'push2.eastmoney.com',path:'/api/qt/stock/fflow/kline/get'},
+  {host:'push2his.eastmoney.com',path:'/api/qt/stock/fflow/kline/get'}
  ];
  const configuredLimit=Number(options.maxHosts);
  const maxAttempts=Number.isFinite(configuredLimit)?Math.min(sources.length,Math.max(1,Math.floor(configuredLimit))):sources.length;
@@ -451,7 +450,7 @@ async function fetchStockFlowHistory(code,options={}){
   try{
    const u=new URL('https://'+source.host+source.path);
    for(const [k,v] of Object.entries({secid:secid(code),fields1:'f1,f2,f3,f7',fields2:'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',klt:'101',lmt:'5',end:'20500101',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
-   const r=await fetch(u,{headers,signal:AbortSignal.timeout(4200),cache:'no-store'});
+   const r=await fetch(u,{headers,signal:AbortSignal.timeout(2500),cache:'no-store'});
    if(!r.ok)throw Error('HTTP '+r.status);
    const parsed=parseHistory(await r.json());
    return{...parsed,host:source.host,endpoint:source.path,latencyMs:Date.now()-started,fetchedAt:now()};
@@ -780,19 +779,22 @@ if(p==='/api/sector-flow'){
  const c=String(u.searchParams.get('code')||'').trim();
  if(!/^\d{6}$/.test(c))return json({ok:false,error:'股票代码应为6位数字'},400);
  try{
-  const data=await cachedData(db,'flow:'+c,60000,()=>fetchStockFlowHistory(c));
+  const data=await cachedData(db,'flow:'+c,300000,()=>fetchStockFlowHistory(c));
   const latestDate=data.latest?.date||data.rows?.at(-1)?.date||null;
   const latestDateMs=Date.parse(latestDate||'');
   const ageHours=Number.isFinite(latestDateMs)?Number(((Date.now()-latestDateMs)/3600000).toFixed(1)):null;
   const staleFallback=data.cache?.status==='stale-fallback';
-  const staleByDate=Number.isFinite(ageHours)&&ageHours>72;
-  if(staleFallback||staleByDate){
-   const detail=staleFallback?'实时资金流接口失败，当前只有缓存回退数据':'最新资金流记录为 '+latestDate+'，已超过72小时新鲜度门槛';
+  const hasDatedHistory=Array.isArray(data.rows)&&(data.historyDays||data.rows.length)>=5&&Number.isFinite(data.latest?.mainNetInflow)&&Number.isFinite(latestDateMs);
+  const staleByDate=!Number.isFinite(ageHours)||ageHours>72||ageHours< -24;
+  if(!hasDatedHistory||staleByDate){
+   const detail=staleByDate?'最新资金流记录日期缺失或超出72小时新鲜度门槛':'没有至少5条带日期且含有效主力净流入值的历史记录';
    await health(db,'eastmoney-stock-flow','stale',detail,null);
-   return json({ok:false,code:c,realTimeAvailable:false,staleFallback,latestDate,ageHours,source:data.source||'eastmoney-stock-fflow-kline',cache:data.cache||null,error:detail,validation:{hasRows:Array.isArray(data.rows)&&data.rows.length>0,hasMainNetFlow:Number.isFinite(data.latest?.mainNetInflow),historyDays:data.historyDays||data.rows?.length||0,canReportFiveDayTotal:false,note:'陈旧数据不会作为实时资金流返回；请稍后重试或查看数据源诊断。'}},503);
+   return json({ok:false,code:c,realTimeAvailable:false,staleFallback,latestDate,ageHours,source:data.source||'eastmoney-stock-fflow-history',cache:data.cache||null,error:detail,validation:{hasRows:Array.isArray(data.rows)&&data.rows.length>0,hasMainNetFlow:Number.isFinite(data.latest?.mainNetInflow),historyDays:data.historyDays||data.rows?.length||0,canReportFiveDayTotal:false,note:'日期过旧或历史覆盖不足的数据不会被当作有效5日资金流。'}},503);
   }
-  await health(db,data.source||'eastmoney-stock-flow','ok','Flow source '+(data.host||'unknown')+'; rows '+(data.historyDays||data.rows?.length||0),data.latencyMs);
-  return json({ok:true,code:c,realTimeAvailable:data.period!=='snapshot-date-unverified',latestDate,ageHours,...data,validation:{hasRows:Array.isArray(data.rows)&&data.rows.length>0,hasMainNetFlow:Number.isFinite(data.latest?.mainNetInflow),historyDays:data.historyDays||data.rows?.length||0,canReportFiveDayTotal:(data.historyDays||data.rows?.length||0)>=5&&data.period!=='snapshot-date-unverified',unit:data.latest?.unit||'CNY',note:'仅当返回至少5个有日期的历史记录时，才可称为5日合计；日期未核实的快照不得称为当日收盘资金流。'}});
+  const dataFreshness=staleFallback?'cached-last-known':'source-current';
+  const warning=staleFallback?'上游接口暂时失败，返回最近一次已核验的带日期历史；这不是盘中实时资金快照。':null;
+  await health(db,data.source||'eastmoney-stock-flow',staleFallback?'stale':'ok',(warning?warning+' ':'')+'Flow source '+(data.host||'unknown')+'; rows '+(data.historyDays||data.rows?.length||0),data.latencyMs);
+  return json({ok:true,code:c,realTimeAvailable:!staleFallback&&data.period!=='snapshot-date-unverified',dataFreshness,warning,latestDate,ageHours,...data,validation:{hasRows:Array.isArray(data.rows)&&data.rows.length>0,hasMainNetFlow:Number.isFinite(data.latest?.mainNetInflow),historyDays:data.historyDays||data.rows?.length||0,canReportFiveDayTotal:(data.historyDays||data.rows?.length||0)>=5&&data.period!=='snapshot-date-unverified',unit:data.latest?.unit||'CNY',note:'至少5条带日期历史才可计算5日合计；缓存回退会明确标注，未核实日期的快照不得作为多日资金证据。'}});
  }catch(e){
   await health(db,'eastmoney-stock-flow','error',String(e?.message||e));
   return json({ok:false,code:c,error:String(e?.message||e),source:'eastmoney-stock-fflow-kline'},502);
@@ -860,18 +862,18 @@ if(p==='/api/sector-flow'){
    cachedData(db,'quote:'+code,10000,()=>quote(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
    cachedData(db,'kline:'+code+':day:120',300000,()=>kline(code,120,'day')).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
    cachedData(db,'financial:'+code,21600000,()=>fetchFinancialSnapshot(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
-   cachedData(db,'flow:'+code,60000,()=>fetchStockFlowHistory(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
+   cachedData(db,'flow:'+code,300000,()=>fetchStockFlowHistory(code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
   ]);
   if(!qResult.data)throw Error('实时行情不可用，不能安全生成个股分析：'+qResult.error);
   const flowData=flowResult.data;
   const flowLatestDate=flowData?.latest?.date||flowData?.rows?.at(-1)?.date||null;
   const flowLatestMs=Date.parse(flowLatestDate||'');
   const flowAgeHours=Number.isFinite(flowLatestMs)?(Date.now()-flowLatestMs)/3600000:null;
-  const flowIsStale=flowData?.cache?.status==='stale-fallback'||(Number.isFinite(flowAgeHours)&&flowAgeHours>72);
+  const flowIsStale=!Number.isFinite(flowLatestMs)||!Number.isFinite(flowAgeHours)||flowAgeHours>72||flowAgeHours< -24;
   const flowHistoryValid=!!(flowData&&!flowIsStale&&flowData.period!=='snapshot-date-unverified'&&(flowData.historyDays||flowData.rows?.length||0)>=5&&Number.isFinite(flowLatestMs));
   const usableFlowData=flowHistoryValid?flowData:null;
   const usableFlowSnapshot=flowData&&!flowIsStale&&flowData.period==='snapshot-date-unverified'?{latest:flowData.latest,source:flowData.source,host:flowData.host,retrievedAt:flowData.latest?.retrievedAt||flowData.cache?.updatedAt||null,note:'接口未提供可核验的交易日期；仅作为未确认日期的快照，不计入多日资金流评分'}:null;
-  const usableFlowError=flowIsStale?'资金流缓存/记录已超过72小时新鲜度门槛，未作为实时数据使用':!flowHistoryValid&&!usableFlowSnapshot?(flowResult.error||'未取得通过日期和覆盖率校验的5日资金流历史'):null;
+  const usableFlowError=flowIsStale?'资金流历史日期缺失或超过72小时新鲜度门槛，未作为有效多日证据':flowHistoryValid&&flowData?.cache?.status==='stale-fallback'?'上游暂时不可用，使用最近一次已核验的带日期历史；最新交易日为'+flowLatestDate:!flowHistoryValid&&!usableFlowSnapshot?(flowResult.error||'未取得通过日期和覆盖率校验的5日资金流历史'):null;
   const q=qResult.data,k=kResult.data,rows=k?.rows||[],last=rows.at(-1);
   const avg=n=>{const z=rows.slice(-n).map(x=>x.close).filter(Number.isFinite);return z.length?z.reduce((a,v)=>a+v,0)/z.length:null};
   const ma20=avg(20),ma60=avg(60),ma5=avg(5);
@@ -1082,9 +1084,9 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    const flowDate=Date.parse(hist?.latest?.date||hist?.rows?.at(-1)?.date||'');
    const flowAge=Number.isFinite(flowDate)?Date.now()-flowDate:Infinity;
    const flowFresh=flowAge>=-86400000&&flowAge<=72*60*60*1000;
-   if(hist&&hist.cache?.status!=='stale-fallback'&&flowFresh&&(hist.historyDays||hist.rows?.length||0)>=5&&hist.rows?.some(x=>Number.isFinite(x.mainNetInflow))){
+   if(hist&&flowFresh&&(hist.historyDays||hist.rows?.length||0)>=5&&hist.rows?.some(x=>Number.isFinite(x.mainNetInflow))){
     item.analysis.fundFlowHistory=hist;
-    item.analysis.fundFlowError=null;
+    item.analysis.fundFlowError=hist.cache?.status==='stale-fallback'?'上游暂时不可用，使用最近一次已核验的带日期历史；最新交易日为'+(hist.latest?.date||'未知'):null;
     item.analysis.dataQuality.flowKnown=true;
     item.analysis.dataQuality.flowSource=hist.source||null;
     item.analysis.dataQuality.flowHistoryDays=hist.historyDays||hist.rows.length;
@@ -1100,7 +1102,7 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    const hist=a.fundFlowHistory;
    const flowDateMs=Date.parse(hist?.latest?.date||hist?.rows?.at(-1)?.date||'');
    const flowAgeMs=Date.now()-flowDateMs;
-   const validHistory=!!(hist&&hist.period!=='snapshot-date-unverified'&&hist.cache?.status!=='stale-fallback'&&(hist.historyDays||0)>=5&&Number.isFinite(hist.cumulativeMainNetInflow)&&Number.isFinite(flowDateMs)&&flowAgeMs>=-86400000&&flowAgeMs<=72*60*60*1000);
+   const validHistory=!!(hist&&hist.period!=='snapshot-date-unverified'&&(hist.historyDays||0)>=5&&Number.isFinite(hist.cumulativeMainNetInflow)&&Number.isFinite(flowDateMs)&&flowAgeMs>=-86400000&&flowAgeMs<=72*60*60*1000);
    const flowPositive=!!(validHistory&&hist.cumulativeMainNetInflow>0);
    const matchedSector=boards.filter(b=>{const t=Date.parse(b.sectorFlow?.fetchedAt||'');const age=Date.now()-t;return Number.isFinite(t)&&age>=-86400000&&age<=2*60*60*1000&&Number.isFinite(b.sectorFlow?.flow);});
    const sectorPositive=matchedSector.some(b=>b.sectorFlow.flow>0&&Number.isFinite(b.sectorFlow.changePct)&&b.sectorFlow.changePct>0);
