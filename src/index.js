@@ -422,9 +422,10 @@ async function fetchStockFlowHistory(code,options={}){
  // Eastmoney has used two flow-history route variants. Pair each route with a host that supports it;
  // rotating host names while repeating a single invalid path is not meaningful failover.
  const sources=[
-  {host:'push2his.eastmoney.com',path:'/api/qt/stock/fflow/daykline/get'},
   {host:'push2.eastmoney.com',path:'/api/qt/stock/fflow/kline/get'},
-  {host:'push2his.eastmoney.com',path:'/api/qt/stock/fflow/kline/get'}
+  {host:'push2delay.eastmoney.com',path:'/api/qt/stock/fflow/kline/get'},
+  {host:'push2his.eastmoney.com',path:'/api/qt/stock/fflow/kline/get'},
+  {host:'29.push2.eastmoney.com',path:'/api/qt/stock/fflow/kline/get'}
  ];
  const configuredLimit=Number(options.maxHosts);
  const maxAttempts=Number.isFinite(configuredLimit)?Math.min(sources.length,Math.max(1,Math.floor(configuredLimit))):sources.length;
@@ -548,9 +549,21 @@ async function fetchSectorBoardFlow(boardCode,options={}){
 }
 
 async function loadSectorBoardFlow(db,boardCode){
+ // Prefer the already-normalized industry/concept rankings before making a dedicated board quote call.
+ // This avoids a fragile secid=90.BKxxxx request when the same board is present in clist/get.
+ const lookupErrors=[];
+ for(const type of ['industry','concept']){
+  try{
+   const ranked=await cachedData(db,'sector-flow:'+type,60000,()=>fetchSectorFlowRanks(type,{maxHosts:2}));
+   const match=(Array.isArray(ranked)?ranked:[]).find(x=>String(x.code||'').toUpperCase()===String(boardCode).toUpperCase());
+   if(match&&Number.isFinite(match.flow)&&Number.isFinite(match.changePct)&&(Number.isFinite(match.amount)&&match.amount>0||Number.isFinite(match.price)&&match.price>0)){
+    return{...match,code:String(boardCode).toUpperCase(),source:match.source||'eastmoney-sector-ranking',sourceMethod:'matched-sector-ranking',matchedBy:'board-code',fetchedAt:match.fetchedAt||now(),unit:'CNY'};
+   }
+  }catch(e){lookupErrors.push(type+': '+String(e?.message||e))}
+ }
  const data=await cachedData(db,'sector-board-flow:'+boardCode,60000,()=>fetchSectorBoardFlow(boardCode,{maxHosts:3}));
  const usable=data?.cache?.status!=='stale-fallback'&&Number.isFinite(data?.flow)&&Number.isFinite(data?.changePct)&&(Number.isFinite(data?.amount)&&data.amount>0||Number.isFinite(data?.price)&&data.price>0);
- if(!usable)throw Error('板块直连接口没有返回可核验的当前行情字段，已拒绝使用旧缓存/默认零值');
+ if(!usable)throw Error('板块行情/资金字段未通过校验；排行匹配错误：'+lookupErrors.join('；')+'；直连接口错误或字段不完整');
  return data;
 }
 
