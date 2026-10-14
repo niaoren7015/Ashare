@@ -795,7 +795,7 @@ if(p==='/api/sector-flow'){
  const c=String(u.searchParams.get('code')||'').trim();
  if(!/^\d{6}$/.test(c))return json({ok:false,error:'股票代码应为6位数字'},400);
  try{
-  const data=await cachedData(db,'flow:'+c,300000,()=>fetchStockFlowHistory(c));
+  const data=await cachedData(db,'flow:v2:'+c,300000,()=>fetchStockFlowHistory(c));
   const latestDate=data.latest?.date||data.rows?.at(-1)?.date||null;
   const latestDateMs=Date.parse(latestDate||'');
   const ageHours=Number.isFinite(latestDateMs)?Number(((Date.now()-latestDateMs)/3600000).toFixed(1)):null;
@@ -1093,7 +1093,7 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    item.riskAudit={source:ann?.data?.source||null,fetchedAt:ann?.data?.fetchedAt||null,announcementAvailable,announcementError:ann?.error||null,checkedRecentAnnouncementCount:textRows.length,flags,unlockClues:unlockRows,unlockStatus,pledgeStatus,shareholderChangeStatus,shareholderChangeEvidence:shareholderChangeRows.slice(0,8),fiveDayMainNetInflow:fiveDayFlow,persistentFiveDayOutflow:persistentOutflow,revenueUpProfitDown,veto,unknowns,announcementTitles:textRows.slice(0,8)};
   }
   // A bounded, single-host 5-day flow check for the five shortlisted names. No undated snapshot fallback.
-  const candidateFlowResults=await Promise.all(results.map(async item=>cachedData(db,'screen-flow-history:'+item.code,300000,()=>fetchStockFlowHistory(item.code,{maxHosts:2,historyOnly:true})).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
+  const candidateFlowResults=await Promise.all(results.map(async item=>cachedData(db,'screen-flow-history:v2:'+item.code,300000,()=>fetchStockFlowHistory(item.code,{maxHosts:2,historyOnly:true})).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
   for(const item of results){
    const f=candidateFlowResults.find(x=>x.code===item.code);
    const hist=f?.data;
