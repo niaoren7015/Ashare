@@ -502,7 +502,7 @@ async function fetchFinancialSnapshot(code,options={}){
 
 async function fetchSectorFlowRanks(type='industry',options={}){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
- const fs=type==='concept'?'m:90+t:3':'m:90+t:2';
+ const fs=type==='concept'?'m:90+t:3+f:!50':'m:90+t:2+f:!50';
  const allHosts=type==='concept'?['push2delay.eastmoney.com','79.push2.eastmoney.com','29.push2.eastmoney.com','push2.eastmoney.com']:['push2delay.eastmoney.com','17.push2.eastmoney.com','29.push2.eastmoney.com','push2.eastmoney.com'];
  const hosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
  for(const host of hosts){
@@ -557,7 +557,7 @@ async function loadSectorBoardFlow(db,boardCode){
  const lookupErrors=[];
  for(const type of ['industry','concept']){
   try{
-   const ranked=await cachedData(db,'sector-flow:'+type,60000,()=>fetchSectorFlowRanks(type,{maxHosts:2}));
+   const ranked=await cachedData(db,'sector-flow:v2:'+type,60000,()=>fetchSectorFlowRanks(type,{maxHosts:4}));
    const match=(Array.isArray(ranked)?ranked:[]).find(x=>String(x.code||'').toUpperCase()===String(boardCode).toUpperCase());
    if(match&&Number.isFinite(match.flow)&&Number.isFinite(match.changePct)&&(Number.isFinite(match.amount)&&match.amount>0||Number.isFinite(match.price)&&match.price>0)){
     return{...match,code:String(boardCode).toUpperCase(),source:match.source||'eastmoney-sector-ranking',sourceMethod:'matched-sector-ranking',matchedBy:'board-code',fetchedAt:match.fetchedAt||now(),unit:'CNY'};
@@ -789,7 +789,7 @@ if(p==='/api/sector-constituents'){
 if(p==='/api/sector-flow'){
  const type=String(u.searchParams.get('type')||'industry');
  if(!['industry','concept'].includes(type))return json({ok:false,error:'type 应为 industry 或 concept'},400);
- try{const data=await cachedData(db,'sector-flow:'+type,60000,()=>fetchSectorFlowRanks(type));return json({ok:true,type,fetchedAt:now(),count:data.length,flowCoverage:data.length?Math.round(data.filter(x=>Number.isFinite(x.flow)).length/data.length*100):0,rows:data})}
+ try{const data=await cachedData(db,'sector-flow:v2:'+type,60000,()=>fetchSectorFlowRanks(type));return json({ok:true,type,fetchedAt:now(),count:data.length,flowCoverage:data.length?Math.round(data.filter(x=>Number.isFinite(x.flow)).length/data.length*100):0,rows:data})}
  catch(e){return json({ok:false,type,error:String(e?.message||e)},502)}
 }if(p==='/api/flow'){
  const c=String(u.searchParams.get('code')||'').trim();
