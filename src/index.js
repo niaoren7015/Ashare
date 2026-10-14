@@ -948,8 +948,8 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   const valuePool=liquid.filter(c=>Number.isFinite(c.changePct)&&c.changePct>=0&&c.changePct<=4.5&&Number.isFinite(c.pe)&&c.pe>0&&c.pe<=35).sort((a,b)=>b.preScore-a.preScore);
   stage='读取行业/概念板块资金排行';
   const [industryFlowResult,conceptFlowResult]=await Promise.all([
-   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
-   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))
+   cachedData(db,'sector-flow:industry',300000,()=>fetchSectorFlowRanks('industry',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
+   cachedData(db,'sector-flow:concept',300000,()=>fetchSectorFlowRanks('concept',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))
   ]);
   const sectorRows=[...industryFlowResult.data,...conceptFlowResult.data];
   const sectorMap=new Map();for(const x of sectorRows){if(x.code)sectorMap.set('code:'+x.code,x);if(x.name)sectorMap.set('name:'+String(x.name).trim().toLowerCase(),x)}
