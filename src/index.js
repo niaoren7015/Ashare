@@ -474,7 +474,7 @@ async function fetchFinancialSnapshot(code){
 async function fetchSectorFlowRanks(type='industry',options={}){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const fs=type==='concept'?'m:90+t:3':'m:90+t:2';
- const allHosts=type==='concept'?['79.push2.eastmoney.com','29.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com']:['17.push2.eastmoney.com','29.push2.eastmoney.com','push2delay.eastmoney.com','push2.eastmoney.com'];
+ const allHosts=type==='concept'?['push2delay.eastmoney.com','79.push2.eastmoney.com','29.push2.eastmoney.com','push2.eastmoney.com']:['push2delay.eastmoney.com','17.push2.eastmoney.com','29.push2.eastmoney.com','push2.eastmoney.com'];
  const hosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
  for(const host of hosts){
   try{
@@ -914,7 +914,7 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   const screenRequest=await req.json().catch(()=>({}));
   const universeSessionId=String(screenRequest.universeSessionId||'');
   if(universeSessionId.length<8)throw Error('缺少本轮全市场股票池同步标识，请从智能选股页面重新发起');
-  // Broad-market scan uses bounded cached batches; only four finalists receive deep per-stock checks to protect Worker subrequest limits.
+  // Broad-market scan uses cached batches; only three finalists receive deep checks, and verified hot-board membership is reused to bound Worker subrequests.
   const [candidatePayload,market]=await Promise.all([
    fetchScreenCandidates(db,universeSessionId),
    Promise.all(['000001','399001'].map(async code=>{try{return await cachedData(db,'index:'+code,20000,()=>quoteIndex(code))}catch(e){return{code,error:String(e.message||e)}}}))
@@ -948,8 +948,8 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   const valuePool=liquid.filter(c=>Number.isFinite(c.changePct)&&c.changePct>=0&&c.changePct<=4.5&&Number.isFinite(c.pe)&&c.pe>0&&c.pe<=35).sort((a,b)=>b.preScore-a.preScore);
   stage='读取行业/概念板块资金排行';
   const [industryFlowResult,conceptFlowResult]=await Promise.all([
-   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry',{maxHosts:3})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
-   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept',{maxHosts:3})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))
+   cachedData(db,'sector-flow:industry',60000,()=>fetchSectorFlowRanks('industry',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)})),
+   cachedData(db,'sector-flow:concept',60000,()=>fetchSectorFlowRanks('concept',{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))
   ]);
   const sectorRows=[...industryFlowResult.data,...conceptFlowResult.data];
   const sectorMap=new Map();for(const x of sectorRows){if(x.code)sectorMap.set('code:'+x.code,x);if(x.name)sectorMap.set('name:'+String(x.name).trim().toLowerCase(),x)}
