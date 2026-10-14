@@ -444,7 +444,10 @@ async function fetchStockFlowHistory(code,options={}){
   }
   const rows=[...byDate.values()].sort((a,b)=>a.date.localeCompare(b.date));
   if(!rows.length)throw Error('资金流历史记录日期或主力净流入字段无效');
-  return{rows,latest:rows.at(-1),cumulativeMainNetInflow:rows.reduce((sum,x)=>sum+x.mainNetInflow,0),historyDays:rows.length,period:rows.length>=5?'5-trading-days':'available-history',source:'eastmoney-stock-fflow-history'};
+  // A source is not successful merely because it returned one row. Keep trying failovers until
+  // the minimum dated history needed by analysis is actually present.
+  if(rows.length<5)throw Error('资金流历史仅返回'+rows.length+'条有效记录，至少需要5条；继续尝试备用源');
+  return{rows,latest:rows.at(-1),cumulativeMainNetInflow:rows.reduce((sum,x)=>sum+x.mainNetInflow,0),historyDays:rows.length,period:'5-trading-days',source:'eastmoney-stock-fflow-history'};
  };
  for(const source of sources.slice(0,maxAttempts)){
   const started=Date.now();
