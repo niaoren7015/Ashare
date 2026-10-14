@@ -503,12 +503,13 @@ async function fetchFinancialSnapshot(code,options={}){
 async function fetchSectorFlowRanks(type='industry',options={}){
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const fs=type==='concept'?'m:90+t:3+f:!50':'m:90+t:2+f:!50';
+ const fid=options.fid==='f3'?'f3':'f62';
  const allHosts=type==='concept'?['push2delay.eastmoney.com','79.push2.eastmoney.com','29.push2.eastmoney.com','push2.eastmoney.com']:['push2delay.eastmoney.com','17.push2.eastmoney.com','29.push2.eastmoney.com','push2.eastmoney.com'];
  const hosts=options.maxHosts?allHosts.slice(0,Math.max(1,options.maxHosts)):allHosts;
  for(const host of hosts){
   try{
    const u=new URL('https://'+host+'/api/qt/clist/get');
-   for(const [k,v] of Object.entries({pn:'1',pz:'500',po:'1',np:'1',fltt:'2',invt:'2',fid:'f62',fs,fields:'f12,f14,f2,f3,f6,f62,f184',ut:'fa5fd1943c7b386f172d6893dbfba10b',_ :String(Date.now())}))u.searchParams.set(k,v);
+   for(const [k,v] of Object.entries({pn:'1',pz:'500',po:'1',np:'1',fltt:'2',invt:'2',fid,fs,fields:'f12,f14,f2,f3,f6,f62,f184',ut:'fa5fd1943c7b386f172d6893dbfba10b',_ :String(Date.now())}))u.searchParams.set(k,v);
    const r=await fetch(u,{headers,signal:AbortSignal.timeout(3500),cache:'no-store'});if(!r.ok)throw Error(host+' HTTP '+r.status);
    const raw=(await r.text()).trim();if(!raw)throw Error(host+' 空响应');
    let body;try{body=JSON.parse(raw)}catch{const m=raw.match(/^[^(]*\(([\s\S]*)\)\s*;?$/);if(!m)throw Error(host+' 返回非JSON/JSONP');body=JSON.parse(m[1])}
@@ -557,7 +558,7 @@ async function loadSectorBoardFlow(db,boardCode){
  const lookupErrors=[];
  for(const type of ['industry','concept']){
   try{
-   const ranked=await cachedData(db,'sector-flow:v2:'+type,60000,()=>fetchSectorFlowRanks(type,{maxHosts:4}));
+   const ranked=await cachedData(db,'sector-board-lookup:v1:'+type,60000,()=>fetchSectorFlowRanks(type,{maxHosts:4,fid:'f3'}));
    const match=(Array.isArray(ranked)?ranked:[]).find(x=>String(x.code||'').toUpperCase()===String(boardCode).toUpperCase());
    if(match&&Number.isFinite(match.flow)&&Number.isFinite(match.changePct)&&(Number.isFinite(match.amount)&&match.amount>0||Number.isFinite(match.price)&&match.price>0)){
     return{...match,code:String(boardCode).toUpperCase(),source:match.source||'eastmoney-sector-ranking',sourceMethod:'matched-sector-ranking',matchedBy:'board-code',fetchedAt:match.fetchedAt||now(),unit:'CNY'};
