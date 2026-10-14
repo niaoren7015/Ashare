@@ -983,16 +983,16 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   }).sort((a,b)=>(b.preThemeScore||0)-(a.preThemeScore||0)||b.preScore-a.preScore||(Number(b.amount)||0)-(Number(a.amount)||0));
   const chosen=preliminaryScored.slice(0,3);
   stage='读取最终候选股行情、日K线和财务摘要';
-  // Three finalists align with the user-facing recommendation count and keep worst-case upstream fetches under the Worker subrequest budget..
+  // Three finalists align with the user-facing recommendation count and keep worst-case upstream fetches under the Worker subrequest budget.
   const results=await Promise.all(chosen.map(async c=>{
    const [qResult,kResult,finResult]=await Promise.all([
     cachedData(db,'quote:'+c.code,10000,()=>quote(c.code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
     cachedData(db,'kline:'+c.code+':day:120',300000,()=>kline(c.code,120,'day')).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
-    cachedData(db,'financial:'+c.code,21600000,()=>fetchFinancialSnapshot(c.code,{maxAttempts:1})).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
+    cachedData(db,'financial:'+c.code,21600000,()=>fetchFinancialSnapshot(c.code,{maxAttempts:2})).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
    ]);
    const q=qResult.data||{code:c.code,name:c.name,price:c.price,changePct:c.changePct,source:c.rankSource,pe:c.pe,turnoverRate:c.turnover,amount:c.amount};
    const k=kResult.data,rows=k?.rows||[],last=rows.at(-1);
-   const avg=n=>{const a=rows.slice(-n).map(x=>x.close).filter(Number.isFinite);return a.length?a.reduce((sum,x)=>sum+x,0)/a.length:null};
+   const avg=n=>{const a=rows.slice(-n).map(x=>x.close).filter(Number.isFinite);return a.length===n?a.reduce((sum,x)=>sum+x,0)/n:null};
    const sliceN=rows.slice(-20),low20=sliceN.length?Math.min(...sliceN.map(x=>x.low).filter(Number.isFinite)):null,high20=sliceN.length?Math.max(...sliceN.map(x=>x.high).filter(Number.isFinite)):null;
    const ret=(n)=>rows.length>n&&rows[rows.length-n-1]?.close?Number(((last.close/rows[rows.length-n-1].close-1)*100).toFixed(2)):null;
    const closes=rows.slice(-20).map(x=>x.close).filter(Number.isFinite);
