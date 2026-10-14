@@ -417,52 +417,56 @@ async function fetchScreenCandidates(db,sessionId){
 
 async function fetchStockFlowHistory(code,options={}){
  code=String(code||'').trim();
- if(!/^\d{6}$/.test(code))throw Error('股票代码应为6位数字');
+ if(code.length!==6||![...code].every(ch=>ch>='0'&&ch<='9'))throw Error('股票代码应为6位数字');
  const headers={'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
- // Keep this list explicit: these are host failovers for the same documented endpoint, not three different data providers.
- const allHosts=['push2his.eastmoney.com','push2.eastmoney.com','push2delay.eastmoney.com'];
- const maxHosts=Number.isFinite(Number(options.maxHosts))?Math.min(allHosts.length,Math.max(1,Math.floor(Number(options.maxHosts)))):allHosts.length;
- const hosts=allHosts.slice(0,maxHosts);
+ // Eastmoney has used two flow-history route variants. Pair each route with a host that supports it;
+ // rotating host names while repeating a single invalid path is not meaningful failover.
+ const sources=[
+  {host:'push2.eastmoney.com',path:'/api/qt/stock/fflow/kline/get'},
+  {host:'push2his.eastmoney.com',path:'/api/qt/stock/fflow/daykline/get'},
+  {host:'push2his.eastmoney.com',path:'/api/qt/stock/fflow/kline/get'},
+  {host:'push2.eastmoney.com',path:'/api/qt/stock/fflow/daykline/get'}
+ ];
+ const configuredLimit=Number(options.maxHosts);
+ const maxAttempts=Number.isFinite(configuredLimit)?Math.min(sources.length,Math.max(1,Math.floor(configuredLimit))):sources.length;
  const numberOrNull=v=>v==null||v===''||v==='-'?null:(Number.isFinite(Number(v))?Number(v):null);
  const parseHistory=body=>{
+  if(body?.rc!=null&&Number(body.rc)!==0)throw Error('东方财富返回业务错误 rc='+body.rc+(body.msg?': '+body.msg:''));
   const arr=body?.data?.klines;
-  if(!Array.isArray(arr)||!arr.length)throw Error('daykline接口未返回data.klines历史数组');
+  if(!Array.isArray(arr)||!arr.length)throw Error('资金流历史接口未返回data.klines数组');
   const byDate=new Map();
   for(const line of arr){
    const p=String(line||'').split(',');
-   const date=String(p[0]||'').trim();
-   const mainNetInflow=numberOrNull(p[1]);
-   if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!Number.isFinite(Date.parse(date+'T00:00:00Z'))||mainNetInflow==null)continue;
+   const date=String(p[0]||'').trim(),mainNetInflow=numberOrNull(p[1]);
+   const dateShape=date.length===10&&date[4]==='-'&&date[7]==='-';
+   if(!dateShape||!Number.isFinite(Date.parse(date+'T00:00:00Z'))||mainNetInflow==null)continue;
    byDate.set(date,{date,mainNetInflow,smallNetInflow:numberOrNull(p[2]),mediumNetInflow:numberOrNull(p[3]),largeNetInflow:numberOrNull(p[4]),superLargeNetInflow:numberOrNull(p[5]),mainNetInflowPct:numberOrNull(p[6]),unit:'CNY'});
   }
   const rows=[...byDate.values()].sort((a,b)=>a.date.localeCompare(b.date));
-  if(!rows.length)throw Error('daykline返回记录，但日期或主力净流入字段无效');
-  return{rows,latest:rows.at(-1),cumulativeMainNetInflow:rows.reduce((sum,x)=>sum+x.mainNetInflow,0),historyDays:rows.length,period:rows.length>=5?'5-trading-days':'available-history',source:'eastmoney-stock-fflow-daykline'};
+  if(!rows.length)throw Error('资金流历史记录日期或主力净流入字段无效');
+  return{rows,latest:rows.at(-1),cumulativeMainNetInflow:rows.reduce((sum,x)=>sum+x.mainNetInflow,0),historyDays:rows.length,period:rows.length>=5?'5-trading-days':'available-history',source:'eastmoney-stock-fflow-history'};
  };
- // The correct historical route is /stock/fflow/daykline/get. /kline/get is not interchangeable and may return 404.
- for(const host of hosts){
+ for(const source of sources.slice(0,maxAttempts)){
   const started=Date.now();
   try{
-   const u=new URL('https://'+host+'/api/qt/stock/fflow/daykline/get');
-   for(const [k,v] of Object.entries({secid:secid(code),fields1:'f1,f2,f3,f7',fields2:'f51,f52,f53,f54,f55,f56,f57',klt:'101',lmt:'5',end:'20500101',ut:'fa5fd1943c7b386f172d6893dbfba10b'}))u.searchParams.set(k,v);
+   const u=new URL('https://'+source.host+source.path);
+   for(const [k,v] of Object.entries({secid:secid(code),fields1:'f1,f2,f3,f7',fields2:'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',klt:'101',lmt:'5',end:'20500101',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
    const r=await fetch(u,{headers,signal:AbortSignal.timeout(4200),cache:'no-store'});
    if(!r.ok)throw Error('HTTP '+r.status);
-   const body=await r.json();
-   if(body?.rc!=null&&Number(body.rc)!==0)throw Error('东方财富返回业务错误 rc='+body.rc+(body.msg?': '+body.msg:''));
-   const parsed=parseHistory(body);
-   return{...parsed,host,latencyMs:Date.now()-started,fetchedAt:now(),endpoint:'/api/qt/stock/fflow/daykline/get'};
-  }catch(e){errors.push(host+': '+String(e?.message||e))}
+   const parsed=parseHistory(await r.json());
+   return{...parsed,host:source.host,endpoint:source.path,latencyMs:Date.now()-started,fetchedAt:now()};
+  }catch(e){errors.push(source.host+source.path+': '+String(e?.message||e))}
  }
  if(options.historyOnly)throw Error('未取得有日期的多日主力资金流历史：'+errors.join('；'));
- // Snapshot is only a lower-confidence fallback. It is deliberately never used to satisfy a 5-day history check.
+ // A dated daily history is preferred; a snapshot without a confirmed trading date is never promoted to 5-day evidence.
  for(const host of ['push2delay.eastmoney.com','push2.eastmoney.com']){
   try{
    const u=new URL('https://'+host+'/api/qt/stock/fflow/get');
-   for(const [k,v] of Object.entries({secid:secid(code),fields:'f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f124,f125',ut:'fa5fd1943c7b386f172d6893dbfba10b'}))u.searchParams.set(k,v);
+   for(const [k,v] of Object.entries({secid:secid(code),fields:'f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f124,f125',ut:'fa5fd1943c7b386f172d6893dbfba10b',_:String(Date.now())}))u.searchParams.set(k,v);
    const r=await fetch(u,{headers,signal:AbortSignal.timeout(3500),cache:'no-store'});
    if(!r.ok)throw Error('HTTP '+r.status);
-   const body=await r.json(),d=body?.data;
-   const mainNetInflow=numberOrNull(d?.f62);
+   const body=await r.json(),d=body?.data,mainNetInflow=numberOrNull(d?.f62);
+   if(body?.rc!=null&&Number(body.rc)!==0)throw Error('东方财富返回业务错误 rc='+body.rc);
    if(!d||mainNetInflow==null)throw Error('当前主力净流入字段缺失');
    const row={date:null,retrievedAt:now(),mainNetInflow,mainNetInflowPct:numberOrNull(d.f184),unit:'CNY',dateBasis:'接口未返回可确认的交易日期，不能据此声称是当日收盘数据'};
    return{rows:[row],latest:row,cumulativeMainNetInflow:row.mainNetInflow,historyDays:1,period:'snapshot-date-unverified',source:'eastmoney-stock-fflow-snapshot',historyUnavailable:errors.join('；'),host,endpoint:'/api/qt/stock/fflow/get',fetchedAt:now()};
