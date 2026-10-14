@@ -67,7 +67,7 @@ jobs:
         env:
           WORKER_URL: https://a-share-ai-tracker.parker-f21.workers.dev
       - name: Production smart-screen end-to-end acceptance (opt-in commit tag)
-        if: contains(github.event.head_commit.message, '[screen-e2e]')
+        if: contains(github.event.head_commit.message, '[screen-e2e]') || contains(github.event.head_commit.message, '[flow-e2e]')
         timeout-minutes: 3
         run: |
           node <<'NODE'
