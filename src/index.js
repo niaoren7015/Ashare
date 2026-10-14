@@ -448,7 +448,7 @@ async function fetchStockFlowHistory(code,options={}){
  throw Error('个股资金流历史/快照接口均未通过有效性校验：'+errors.join('；'));
 }
 
-async function fetchFinancialSnapshot(code){
+async function fetchFinancialSnapshot(code,options={}){
  const headers={'user-agent':'Mozilla/5.0','referer':'https://data.eastmoney.com/','accept':'application/json,text/plain,*/*'},errors=[];
  const market=/^(6|9)/.test(String(code))?'SH':'SZ',secucode=code+'.'+market;
  const val=(...values)=>{for(const v of values)if(v!==undefined&&v!==null&&String(v).trim()!==''&&Number.isFinite(Number(v)))return Number(v);return null};
@@ -457,7 +457,7 @@ async function fetchFinancialSnapshot(code){
   {url:'https://datacenter-web.eastmoney.com/api/data/v1/get',params:{reportName:'RPT_LICO_FN_CPD',columns:'ALL',filter:'(SECURITY_CODE="'+code+'")',pageNumber:'1',pageSize:'5',sortColumns:'REPORTDATE',sortTypes:'-1',source:'WEB',client:'WEB'}},
   {url:'https://datacenter.eastmoney.com/securities/api/data/v1/get',params:{reportName:'RPT_F10_FINANCE_MAINFINADATA',columns:'ALL',filter:'(SECUCODE="'+secucode+'")',pageNumber:'1',pageSize:'5',sortColumns:'REPORT_DATE',sortTypes:'-1',source:'HSF10',client:'PC'}}
  ];
- for(const a of attempts){
+ for(const a of attempts.slice(0,options.maxAttempts?Math.max(1,options.maxAttempts):attempts.length)){
   try{
    const u=new URL(a.url);for(const [k,v] of Object.entries({...a.params,_:String(Date.now())}))u.searchParams.set(k,v);
    const r=await fetch(u,{headers,signal:AbortSignal.timeout(4500),cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);
@@ -954,11 +954,11 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   const sectorRows=[...industryFlowResult.data,...conceptFlowResult.data];
   const sectorMap=new Map();for(const x of sectorRows){if(x.code)sectorMap.set('code:'+x.code,x);if(x.name)sectorMap.set('name:'+String(x.name).trim().toLowerCase(),x)}
   const freshBoard=x=>{const t=Date.parse(x?.fetchedAt||'');const age=Date.now()-t;return Number.isFinite(t)&&age>=-86400000&&age<=2*60*60*1000;};
-  const hotIndustry=industryFlowResult.data.filter(x=>freshBoard(x)&&Number.isFinite(x.flow)&&x.flow>0&&Number.isFinite(x.changePct)&&x.changePct>0).sort((a,b)=>b.flow-a.flow).slice(0,3);
-  const hotConcept=conceptFlowResult.data.filter(x=>freshBoard(x)&&Number.isFinite(x.flow)&&x.flow>0&&Number.isFinite(x.changePct)&&x.changePct>0).sort((a,b)=>b.flow-a.flow).slice(0,3);
+  const hotIndustry=industryFlowResult.data.filter(x=>freshBoard(x)&&Number.isFinite(x.flow)&&x.flow>0&&Number.isFinite(x.changePct)&&x.changePct>0).sort((a,b)=>b.flow-a.flow).slice(0,2);
+  const hotConcept=conceptFlowResult.data.filter(x=>freshBoard(x)&&Number.isFinite(x.flow)&&x.flow>0&&Number.isFinite(x.changePct)&&x.changePct>0).sort((a,b)=>b.flow-a.flow).slice(0,2);
   const hotBoards=[...new Map([...hotIndustry,...hotConcept].map(x=>[x.code,x])).values()];
   stage='读取热门资金板块成分股';
-  const constituentResults=await Promise.all(hotBoards.map(async board=>({board,...await cachedData(db,'sector-members:'+board.code,300000,()=>fetchSectorConstituents(board.code,{maxHosts:3})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})));
+  const constituentResults=await Promise.all(hotBoards.map(async board=>({board,...await cachedData(db,'sector-members:'+board.code,300000,()=>fetchSectorConstituents(board.code,{maxHosts:1})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})));
   const hotThemeByCode=new Map();
   for(const result of constituentResults){for(const member of result.data||[]){const entry={code:result.board.code,name:result.board.name,type:result.board.type,flow:result.board.flow,changePct:result.board.changePct,fetchedAt:result.board.fetchedAt};if(!hotThemeByCode.has(member.code))hotThemeByCode.set(member.code,[]);hotThemeByCode.get(member.code).push(entry);}}
   const themeCandidates=liquid.filter(c=>hotThemeByCode.has(c.code)&&Number.isFinite(c.changePct)&&c.changePct>=-3&&c.changePct<=8).map(c=>{
@@ -981,16 +981,14 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    const themeScore=Math.min(20,matched.length*8);
    return {...c,preScore:Number((c.preScore+themeScore).toFixed(3)),preThemeScore:Math.max(Number(c.preThemeScore)||0,themeScore),preThemeEvidence:{boards:themes.slice(0,5),positiveBoardCount:matched.length},flowHistory:null,flowHistoryError:'正在核验通过日期校验的个股主力资金流历史'};
   }).sort((a,b)=>(b.preThemeScore||0)-(a.preThemeScore||0)||b.preScore-a.preScore||(Number(b.amount)||0)-(Number(a.amount)||0));
-  const chosen=preliminaryScored.slice(0,4);
-  stage='核验最终候选股所属板块';
-  const boardResults=await Promise.all(chosen.map(async item=>({code:item.code,...await cachedData(db,'stock-boards:'+item.code,300000,()=>fetchStockBoards(item.code,{maxHosts:2})).then(data=>({data,error:null})).catch(e=>({data:[],error:String(e?.message||e)}))})));
-  stage='读取最终候选股行情和日K线';
-  // Fetch actual quote + daily bars for four finalists, keeping the request budget bounded.
+  const chosen=preliminaryScored.slice(0,3);
+  stage='读取最终候选股行情、日K线和财务摘要';
+  // Three finalists align with the user-facing recommendation count and keep worst-case upstream fetches under the Worker subrequest budget..
   const results=await Promise.all(chosen.map(async c=>{
    const [qResult,kResult,finResult]=await Promise.all([
     cachedData(db,'quote:'+c.code,10000,()=>quote(c.code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
     cachedData(db,'kline:'+c.code+':day:120',300000,()=>kline(c.code,120,'day')).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)})),
-    cachedData(db,'financial:'+c.code,21600000,()=>fetchFinancialSnapshot(c.code)).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
+    cachedData(db,'financial:'+c.code,21600000,()=>fetchFinancialSnapshot(c.code,{maxAttempts:1})).then(data=>({data,error:null})).catch(e=>({data:null,error:String(e.message||e)}))
    ]);
    const q=qResult.data||{code:c.code,name:c.name,price:c.price,changePct:c.changePct,source:c.rankSource,pe:c.pe,turnoverRate:c.turnover,amount:c.amount};
    const k=kResult.data,rows=k?.rows||[],last=rows.at(-1);
@@ -1006,9 +1004,9 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
   }));
   stage='将预核验的板块资金证据回填至最终候选';
   for(const item of results){
-   const boardResult=boardResults.find(x=>x.code===item.code);
-   const boards=(boardResult?.data||[]).map(b=>({...b,sectorFlow:(b.code?sectorMap.get('code:'+b.code):null)||sectorMap.get('name:'+String(b.name||'').trim().toLowerCase())||null}));
-   item.sectorContext={boards,hotThemeEvidence:(item.preThemeEvidence?.boards||item.hotThemes||[]).slice(0,6),membershipError:boardResult?.error||null,industryFlowSource:industryFlowResult.data[0]?.source||null,industryFlowError:industryFlowResult.error||null,conceptFlowSource:conceptFlowResult.data[0]?.source||null,conceptFlowError:conceptFlowResult.error||null,sectorFlowUnavailable:!industryFlowResult.data.some(x=>Number.isFinite(x.flow))&&!conceptFlowResult.data.some(x=>Number.isFinite(x.flow))};
+   // Reuse verified constituent membership from the hot-board stage; do not refetch stock-board membership for every finalist.
+   const boards=(item.hotThemes||[]).map(b=>({...b,sectorFlow:(b.code?sectorMap.get('code:'+b.code):null)||sectorMap.get('name:'+String(b.name||'').trim().toLowerCase())||null}));
+   item.sectorContext={boards,hotThemeEvidence:(item.preThemeEvidence?.boards||item.hotThemes||[]).slice(0,6),membershipError:boards.length?null:'未能通过本轮热点板块成分股数据匹配到所属板块',industryFlowSource:industryFlowResult.data[0]?.source||null,industryFlowError:industryFlowResult.error||null,conceptFlowSource:conceptFlowResult.data[0]?.source||null,conceptFlowError:conceptFlowResult.error||null,sectorFlowUnavailable:!industryFlowResult.data.some(x=>Number.isFinite(x.flow))&&!conceptFlowResult.data.some(x=>Number.isFinite(x.flow))};
    const tokens=[item.name,...boards.map(b=>b.name)].map(v=>String(v||'').trim()).filter(v=>v.length>=2);
    item.relatedNews=(newsResult.data?.rows||[]).filter(n=>{
     const ts=Date.parse(n.publishedAt||'');
@@ -1051,7 +1049,7 @@ if(p==='/api/ai/screen'&&req.method==='POST'){
    item.riskAudit={source:ann?.data?.source||null,fetchedAt:ann?.data?.fetchedAt||null,announcementAvailable,announcementError:ann?.error||null,checkedRecentAnnouncementCount:textRows.length,flags,unlockClues:unlockRows,unlockStatus,pledgeStatus,shareholderChangeStatus,shareholderChangeEvidence:shareholderChangeRows.slice(0,8),fiveDayMainNetInflow:fiveDayFlow,persistentFiveDayOutflow:persistentOutflow,revenueUpProfitDown,veto,unknowns,announcementTitles:textRows.slice(0,8)};
   }
   // A bounded, single-host 5-day flow check for the five shortlisted names. No undated snapshot fallback.
-  const candidateFlowResults=await Promise.all(results.map(async item=>cachedData(db,'screen-flow-history:'+item.code,60000,()=>fetchStockFlowHistory(item.code,{maxHosts:3,historyOnly:true})).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
+  const candidateFlowResults=await Promise.all(results.map(async item=>cachedData(db,'screen-flow-history:'+item.code,300000,()=>fetchStockFlowHistory(item.code,{maxHosts:1,historyOnly:true})).then(data=>({code:item.code,data,error:null})).catch(e=>({code:item.code,data:null,error:String(e?.message||e)}))));
   for(const item of results){
    const f=candidateFlowResults.find(x=>x.code===item.code);
    const hist=f?.data;
